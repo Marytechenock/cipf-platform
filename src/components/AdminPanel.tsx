@@ -778,11 +778,51 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
     let created = 0;
     const issues: string[] = [];
     try {
-      const XLSX = await import('xlsx');
-      const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: 'array' });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const table = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '' });
+      const table: unknown[][] = [];
+      const extension = file.name.split('.').pop()?.toLowerCase();
+      if (extension === 'csv') {
+        let row: string[] = [];
+        let field = '';
+        let quoted = false;
+        const csv = await file.text();
+        for (let index = 0; index < csv.length; index += 1) {
+          const char = csv[index];
+          const next = csv[index + 1];
+          if (char === '"' && quoted && next === '"') {
+            field += '"';
+            index += 1;
+          } else if (char === '"') {
+            quoted = !quoted;
+          } else if (char === ',' && !quoted) {
+            row.push(field);
+            field = '';
+          } else if ((char === '\n' || char === '\r') && !quoted) {
+            if (char === '\r' && next === '\n') index += 1;
+            row.push(field);
+            if (row.some((value) => value !== '')) table.push(row);
+            row = [];
+            field = '';
+          } else {
+            field += char;
+          }
+        }
+        if (field || row.length > 0) {
+          row.push(field);
+          if (row.some((value) => value !== '')) table.push(row);
+        }
+      } else if (extension === 'xlsx') {
+        const ExcelJS = await import('exceljs');
+        const { Workbook } = ExcelJS.default;
+        const workbook = new Workbook();
+        await workbook.xlsx.load(await file.arrayBuffer());
+        const sheet = workbook.worksheets[0];
+        sheet.eachRow({ includeEmpty: true }, (row) => {
+          const values = Array.isArray(row.values) ? row.values.slice(1) : [];
+          table.push(values as unknown[]);
+        });
+      } else {
+        throw new Error('Unsupported voter file. Please upload an .xlsx or .csv file.');
+      }
       const rows = readVoterImportRows(table);
 
       if (rows.length === 0) throw new Error('The uploaded file does not contain any voter rows.');
@@ -1210,7 +1250,8 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
   // --- EXPORT TO EXCEL ---
   const exportToExcel = () => {
     void (async () => {
-      const XLSX = await import('xlsx');
+      const ExcelJS = await import('exceljs');
+      const { Workbook } = ExcelJS.default;
       const response = await api.exportAdminUsers(userFilters);
       const exportUsers = response.users;
       if (exportUsers.length === 0) {
@@ -1235,16 +1276,27 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
         'Checked In At': item.checkedInAt ? new Date(item.checkedInAt).toLocaleString() : 'N/A'
       }));
 
-      const ws = XLSX.utils.json_to_sheet(exportData);
-      ws['!cols'] = [
-        { wch: 15 }, { wch: 15 }, { wch: 30 }, { wch: 25 },
-        { wch: 12 }, { wch: 20 }, { wch: 12 }, { wch: 25 }
+      const wb = new Workbook();
+      const ws = wb.addWorksheet('Attendees');
+      ws.columns = [
+        { header: 'First Name', key: 'firstName', width: 15 },
+        { header: 'Last Name', key: 'lastName', width: 15 },
+        { header: 'Email', key: 'email', width: 30 },
+        { header: 'Organization', key: 'organization', width: 25 },
+        { header: 'Checked In', key: 'checkedIn', width: 12 },
+        { header: 'Selected Activity', key: 'selectedActivity', width: 20 },
+        { header: 'Role', key: 'role', width: 12 },
+        { header: 'Checked In At', key: 'checkedInAt', width: 25 }
       ];
-
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Attendees');
+      ws.addRows(exportData);
       const fileName = `MAZ_Winter_School_2026_Attendees_${new Date().toISOString().split('T')[0]}.xlsx`;
-      XLSX.writeFile(wb, fileName);
+      const buffer = await wb.xlsx.writeBuffer();
+      const url = URL.createObjectURL(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      link.click();
+      URL.revokeObjectURL(url);
     })().catch((error: any) => {
       console.error('Export failed:', error);
       alert(error.message || 'Failed to export attendees.');
@@ -2577,9 +2629,9 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
                         <p className="mt-1 text-xs font-medium text-slate-500">Upload an Excel or CSV file with eligible voters.</p>
                         <label className="mt-3 inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-sky-700 px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-sky-800">
                           <Upload className="h-4 w-4" /> {uploading ? 'Importing...' : 'Import Voter File'}
-                          <input type="file" accept=".xlsx,.xls,.csv" onChange={handleElectionVoterBulkUpload} disabled={uploading} className="hidden" />
+                          <input type="file" accept=".xlsx,.csv" onChange={handleElectionVoterBulkUpload} disabled={uploading} className="hidden" />
                         </label>
-                        <p className="mt-2 text-[11px] font-medium text-slate-400">Supported formats: .xlsx, .xls, .csv</p>
+                        <p className="mt-2 text-[11px] font-medium text-slate-400">Supported formats: .xlsx, .csv</p>
                       </div>
                     </div>
                   </div>

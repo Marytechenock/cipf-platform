@@ -170,61 +170,44 @@ The system utilizes a modern, highly responsive architecture decoupling frontend
 
 ---
 
-## Deployment Manual (Production Cloud Run)
+## Deployment Manual
 
 ## Docker Deployment
 
-The project includes a production `Dockerfile` and a `docker-compose.yml` stack with PostgreSQL and persistent upload storage.
+The project includes a production `Dockerfile` and a `docker-compose.yml` stack with PostgreSQL and persistent upload storage. The Compose project is named `cipf-platform` and is separate from the existing MAZ stack.
 
 ### Run With Docker Compose
 
-```bash
-docker compose up --build
-```
+1. Copy `deploy.env.example` to `deploy.env` on the server. Set `CIPF_PUBLIC_APP_URL` to a **new HTTPS hostname**, such as a voting subdomain. Set a unique `AUTH_TOKEN_SECRET`, `DB_PASSWORD`, and super admin credentials. Keep `CIPF_COOKIE_SECURE=true` for HTTPS.
+2. Check that `CIPF_HOST_PORT` is unused on the server. It defaults to `3001`; the container still listens on port `3000`. The host binding defaults to `127.0.0.1` so your reverse proxy can forward the new hostname to `127.0.0.1:3001`.
+3. Check and start only this stack:
 
-Open:
+   ```bash
+   docker compose --env-file deploy.env config --quiet
+   docker compose --env-file deploy.env up -d --build
+   curl -f http://127.0.0.1:3001/api/health
+   ```
 
-```text
-http://localhost:3000
-```
-
-The Compose stack creates:
-
-*   `maz-winter-school-app` for the Node/Express production server.
-*   `maz-winter-school-db` for PostgreSQL.
-*   `maz_postgres_data` volume for database persistence.
-*   `maz_uploads` volume for uploaded speaker, sponsor, candidate, gallery, and study-material files.
+The stack uses its own Compose network, `cipf_postgres_data` and `cipf_uploads` volumes, database `cip_election`, and `cipf_auth` login cookie. It does not mount or migrate the existing MAZ database or upload volume. If this CIPF stack already holds production data under older volume names, back up and migrate that data before switching to these names.
 
 ### Production Notes
 
-Before running in production, change these values in `docker-compose.yml` or provide them through your deployment environment:
+Before running in production, provide these values in the untracked `deploy.env` file:
 
 ```text
 AUTH_TOKEN_SECRET
-ADMIN_BOOTSTRAP_EMAIL
-ADMIN_BOOTSTRAP_PASSWORD
 SUPER_ADMIN_BOOTSTRAP_EMAIL
 SUPER_ADMIN_BOOTSTRAP_PASSWORD
 DB_PASSWORD
-PUBLIC_APP_URL
-COOKIE_SECURE
-CORS_ALLOWED_ORIGINS
+CIPF_PUBLIC_APP_URL
+CIPF_HOST_PORT
 SMTP_HOST / SMTP_USER / SMTP_PASS / MAIL_FROM
 GROQ_API_KEY
 ```
 
-For HTTPS production hosting, set:
+Compose uses `CIPF_PUBLIC_APP_URL` for both the public URL and allowed browser origin. The local `.env` is for development; its localhost URL and `COOKIE_SECURE=false` are not used by the Compose stack. Uploaded files are stored through `UPLOAD_DIR=/app/uploads`, mounted to the `cipf_uploads` Docker volume.
 
-```text
-COOKIE_SECURE=true
-PUBLIC_APP_URL=https://maztechplatform.co.zw
-CORS_ALLOWED_ORIGINS=https://maztechplatform.co.zw
-```
-
-Uploaded files are stored through `UPLOAD_DIR=/app/uploads`, which is mounted to the `maz_uploads` Docker volume.
-
-On startup, the app checks for `ADMIN_BOOTSTRAP_EMAIL`. If that admin user does not exist, it is created automatically with `ADMIN_BOOTSTRAP_PASSWORD`. Existing admin accounts are not overwritten.
-Set `ADMIN_BOOTSTRAP_FORCE_RESET=true` only when you intentionally need to reset the existing bootstrap admin password on startup, then set it back to `false` after login works.
+Compose requires super admin bootstrap credentials. Its super admin creates and manages admin accounts, so Compose does not pass the legacy admin bootstrap or force reset settings from the local `.env`.
 
 Set `SUPER_ADMIN_BOOTSTRAP_EMAIL` and a unique password of at least 12 characters and at most 72 bytes to create the first super admin. Sign in and open `/super-admin` to view API metrics, manage administrator accounts, and review API audit logs. Metrics are calculated from stored audit entries and can be filtered by time range, HTTP method, endpoint, and response code. Once a super admin exists, the legacy admin bootstrap no longer recreates deleted admin accounts. The super admin password is never reset automatically on restart.
 

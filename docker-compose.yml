@@ -1,41 +1,38 @@
+name: cipf-platform
+
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: maz-winter-school-app
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "${CIPF_BIND_ADDRESS:-127.0.0.1}:${CIPF_HOST_PORT:-3001}:3000"
     environment:
       NODE_ENV: production
       PORT: 3000
       UPLOAD_DIR: /app/uploads
 
-      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://maztechplatform.co.zw}
-      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET}
+      PUBLIC_APP_URL: ${CIPF_PUBLIC_APP_URL:?Set CIPF_PUBLIC_APP_URL to the new HTTPS hostname}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:?Set a unique AUTH_TOKEN_SECRET for CIPF}
       AUTH_TOKEN_TTL: ${AUTH_TOKEN_TTL:-7d}
-      COOKIE_SECURE: ${COOKIE_SECURE:-true}
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://maztechplatform.co.zw}
+      AUTH_COOKIE_NAME: cipf_auth
+      COOKIE_SECURE: ${CIPF_COOKIE_SECURE:-true}
+      CORS_ALLOWED_ORIGINS: ${CIPF_PUBLIC_APP_URL:?Set CIPF_PUBLIC_APP_URL to the new HTTPS hostname}
 
-      ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-admin@maz.co.zw}
-      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD}
-      ADMIN_BOOTSTRAP_FORCE_RESET: ${ADMIN_BOOTSTRAP_FORCE_RESET:-false}
-      ADMIN_BOOTSTRAP_FIRST_NAME: ${ADMIN_BOOTSTRAP_FIRST_NAME:-System}
-      ADMIN_BOOTSTRAP_LAST_NAME: ${ADMIN_BOOTSTRAP_LAST_NAME:-Administrator}
-      SUPER_ADMIN_BOOTSTRAP_EMAIL: ${SUPER_ADMIN_BOOTSTRAP_EMAIL:-}
-      SUPER_ADMIN_BOOTSTRAP_PASSWORD: ${SUPER_ADMIN_BOOTSTRAP_PASSWORD:-}
+      SUPER_ADMIN_BOOTSTRAP_EMAIL: ${SUPER_ADMIN_BOOTSTRAP_EMAIL:?Set the CIPF super admin email}
+      SUPER_ADMIN_BOOTSTRAP_PASSWORD: ${SUPER_ADMIN_BOOTSTRAP_PASSWORD:?Set the CIPF super admin password}
       SUPER_ADMIN_BOOTSTRAP_FIRST_NAME: ${SUPER_ADMIN_BOOTSTRAP_FIRST_NAME:-System}
       SUPER_ADMIN_BOOTSTRAP_LAST_NAME: ${SUPER_ADMIN_BOOTSTRAP_LAST_NAME:-Owner}
 
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_NAME: ${DB_NAME:-maz_winter_school}
-      DB_USER: ${DB_USER:-maz_events}
-      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${CIPF_DB_NAME:-cip_election}
+      DB_USER: ${CIPF_DB_USER:-cipf_user}
+      DB_PASSWORD: ${DB_PASSWORD:?Set a unique DB_PASSWORD for CIPF}
       DB_SSL: "false"
       DB_AUTO_CREATE: "false"
 
@@ -46,26 +43,25 @@ services:
       SMTP_SECURE: ${SMTP_SECURE:-false}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
-      MAIL_FROM: ${MAIL_FROM:-MAZ Business Institute <no-reply@maztechplatform.co.zw>}
+      MAIL_FROM: ${MAIL_FROM:-}
     volumes:
-      - maz_uploads:/app/uploads
+      - cipf_uploads:/app/uploads
 
   postgres:
     image: postgres:16-alpine
-    container_name: maz-winter-school-db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${DB_NAME:-maz_winter_school}
-      POSTGRES_USER: ${DB_USER:-maz_events}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${CIPF_DB_NAME:-cip_election}
+      POSTGRES_USER: ${CIPF_DB_USER:-cipf_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set a unique DB_PASSWORD for CIPF}
     volumes:
-      - maz_postgres_data:/var/lib/postgresql/data
+      - cipf_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-maz_user} -d ${DB_NAME:-maz_winter_school}"]
+      test: ["CMD-SHELL", "pg_isready -U ${CIPF_DB_USER:-cipf_user} -d ${CIPF_DB_NAME:-cip_election}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
 volumes:
-  maz_postgres_data:
-  maz_uploads:
+  cipf_postgres_data:
+  cipf_uploads:

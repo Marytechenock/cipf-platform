@@ -2,7 +2,6 @@ import 'dotenv/config';
 import express from 'express';
 import type { Server } from 'node:http';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
 import { getDb } from './src/server/db-postgres';
 import { getEventPhotoAlbums, isGoogleDriveFolderUrl } from './src/lib/eventPhotoAlbums';
 import {
@@ -56,7 +55,7 @@ const UPLOAD_ROOT = process.env.UPLOAD_DIR
     : path.join(process.cwd(), 'uploads');
 const ATTENDEE_QR_DIR = path.join(UPLOAD_ROOT, 'attendee-qrcodes');
 
-const AUTH_COOKIE_NAME = 'maz_auth';
+const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME?.trim() || 'cipf_auth';
 const DEFAULT_AUTH_TOKEN_TTL = '7d';
 
 function parseBooleanFlag(value: string | undefined, defaultValue: boolean) {
@@ -643,10 +642,7 @@ export async function createApp(options: CreateAppOptions = {}) {
   const allowedOrigins = new Set([
     ...parseCsv(process.env.CORS_ALLOWED_ORIGINS),
     ...parseCsv(process.env.CORS_ORIGIN),
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-    'http://134.209.218.173',
-    'https://134.209.218.173'
+    ...(process.env.NODE_ENV === 'production' ? [] : ['http://localhost:3000', 'http://127.0.0.1:3000'])
   ]);
 
   await db.ready();
@@ -3234,6 +3230,7 @@ Ensure the JSON block is completely valid and correctly placed.`;
   }
 
   if (serveFrontend && process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',

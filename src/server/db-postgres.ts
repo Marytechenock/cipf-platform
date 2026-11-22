@@ -62,7 +62,7 @@ export class PostgresDatabase {
     private readonly initializationPromise: Promise<void>;
 
     constructor() {
-        this.databaseName = process.env.DB_NAME || 'maz_winter_school';
+        this.databaseName = process.env.DB_NAME || 'cip_election';
         this.autoCreateDatabase = process.env.DB_AUTO_CREATE === 'true';
         this.pool = new Pool(this.buildPoolConfig(this.databaseName));
         this.sessionQuestions = new SessionQuestionStore(this.pool);

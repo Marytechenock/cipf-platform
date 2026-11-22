@@ -25,7 +25,7 @@ import type {
   VenueInfo
 } from '../types';
 
-const AUTH_COOKIE_NAME = 'maz_auth';
+const AUTH_COOKIE_NAME = 'cipf_auth';
 const TEST_AUTH_SECRET = 'test-auth-secret';
 const SUPPORT_MESSAGE = 'Password recovery is handled by the MAZ support team. Please contact the administrator to reset your access securely.';
 

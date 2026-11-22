@@ -8,7 +8,7 @@ test('PostgreSQL session questions stream numbered arrivals without approval and
   dotenv.config({ quiet: true });
   const host = process.env.DB_HOST || 'localhost';
   assert.ok(['localhost', '127.0.0.1', '::1'].includes(host), 'This test only uses local PostgreSQL.');
-  const client = new Client({ host, port: Number(process.env.DB_PORT || 5432), database: process.env.DB_NAME || 'maz_winter_school', user: process.env.DB_USER || 'postgres', password: process.env.DB_PASSWORD || '', connectionTimeoutMillis: 2000 });
+  const client = new Client({ host, port: Number(process.env.DB_PORT || 5432), database: process.env.DB_NAME || 'cip_election', user: process.env.DB_USER || 'postgres', password: process.env.DB_PASSWORD || '', connectionTimeoutMillis: 2000 });
   await client.connect();
   try {
     // All tables are session-local, including tables created by ensureSchema.
