@@ -307,7 +307,7 @@ export default function VotingView({ user }: VotingViewProps) {
         </div>
       )}
 
-      {eligiblePosition && [eligiblePosition].map(position => (
+      {(user.role === 'admin' ? POSITIONS : eligiblePosition ? [eligiblePosition] : []).map(position => (
         <section key={position.category} className="space-y-3">
           <div><h2 className="text-base font-bold text-slate-950">{position.label}</h2><p className="text-xs font-medium text-slate-500">Select one candidate.</p></div>
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">

@@ -279,12 +279,8 @@ export default function App() {
         }
     };
 
-    const handlePublicTabChange = (tab: string) => {
+    const handlePublicTabChange = (_tab: string) => {
         setActiveTab('voting');
-        if (user?.role === 'admin' && tab === 'voting') {
-            navigateTo('/admin');
-            return;
-        }
         if (currentRoute.kind !== 'app') {
             navigateTo('/');
         }
@@ -318,7 +314,9 @@ export default function App() {
         if (activeTab !== 'voting') setActiveTab('voting');
         const isAdminResultsRoute = user.role === 'admin'
             && (currentRoute.kind === 'election-results' || currentRoute.kind === 'qa-results');
-        if (currentRoute.kind !== 'app' && !isAdminResultsRoute) navigateTo('/');
+        const isVotingSupportRoute = currentRoute.kind === 'voter-registration'
+            && currentRoute.path === '/voter-registration/support';
+        if (currentRoute.kind !== 'app' && !isAdminResultsRoute && !isVotingSupportRoute) navigateTo('/');
     }, [user?.role, activeTab, currentPath]);
 
     // Gallery Filters
@@ -507,7 +505,7 @@ export default function App() {
                 user={user}
                 onLogout={handleLogout}
                 activeTab={currentTab}
-                supportHref={currentRoute.kind === 'app' && activeTab === 'voting' ? '/voter-registration/support' : undefined}
+                supportHref={user?.role === 'admin' || (currentRoute.kind === 'app' && activeTab === 'voting') ? '/voter-registration/support' : undefined}
                 supportLabel="Voting support"
                 onSelectTab={handlePublicTabChange}
                 onSelectAdmin={handleAdminShortcut}

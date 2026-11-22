@@ -646,6 +646,14 @@ test('ballot shows and accepts only the voter’s assigned position', async (t) 
   });
   const ballot = await fetch(`${harness.baseUrl}/api/elections/ballot`, { headers: { Cookie: cookie } });
   assert.deepEqual((await ballot.json()).candidates.map((candidate: ElectionCandidate) => candidate.id), ['cifoz_1']);
+  const adminCookie = extractCookie((await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!')).headers.get('set-cookie'));
+  const adminBallot = await fetch(`${harness.baseUrl}/api/elections/ballot`, { headers: { Cookie: adminCookie } });
+  assert.equal(adminBallot.status, 200);
+  assert.deepEqual((await adminBallot.json()).candidates.map((candidate: ElectionCandidate) => candidate.id), candidates.map(([id]) => id));
+  const adminVote = await fetch(`${harness.baseUrl}/api/elections/${electionId}/vote`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ candidateId: 'cifoz_1' })
+  });
+  assert.equal(adminVote.status, 403);
   for (const invalid of ['employee_1', 'zbca_1', 'unknown', '']) {
     assert.notEqual((await submit({ candidateId: invalid })).status, 200);
     assert.equal(harness.db.state.electionVotes.length, 0);

@@ -2505,7 +2505,9 @@ Ensure the JSON block is completely valid and correctly placed.`;
         return res.status(401).json({ error: 'Unauthorized' });
       }
       const ballot = await db.getElectionBallot(user.id);
-      ballot.candidates = ballot.candidates.filter(candidate => candidate.category === ballot.voter?.eligibleCategory);
+      if (user.role !== 'admin') {
+        ballot.candidates = ballot.candidates.filter(candidate => candidate.category === ballot.voter?.eligibleCategory);
+      }
       res.json({ success: true, ...ballot });
     } catch (error) {
       res.locals.auditCause = error instanceof Error ? error.message : String(error);

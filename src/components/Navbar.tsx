@@ -22,10 +22,8 @@ type NavItem = {
 export default function Navbar({ user, onLogout, activeTab, onSelectTab, onSelectAdmin, supportHref, supportLabel = 'Check-in support' }: NavbarProps) {
   const [isOpen, setIsOpen] = useState(false);
   const isVotingMember = user?.role === 'member';
-  const visiblePrimaryNavItems: NavItem[] = user?.role === 'admin'
-    ? []
-    : [{ id: 'voting', label: 'Voting', icon: Vote }];
-  const navItems = visiblePrimaryNavItems;
+  const navItems: NavItem[] = [{ id: 'voting', label: 'Voting', icon: Vote }];
+  const visiblePrimaryNavItems = user?.role === 'admin' ? [] : navItems;
 
   const handleTabClick = (tabId: string) => {
     onSelectTab(tabId);
@@ -77,6 +75,18 @@ export default function Navbar({ user, onLogout, activeTab, onSelectTab, onSelec
 
           {/* User State Controls */}
           <div className={`flex items-center ${isVotingMember ? 'ml-auto gap-2 lg:ml-0 lg:gap-4' : 'gap-3'}`}>
+            {user?.role === 'admin' && (
+                <button
+                    id="tab-link-voting"
+                    type="button"
+                    onClick={() => handleTabClick('voting')}
+                    aria-current={activeTab === 'voting' ? 'page' : undefined}
+                    className={`inline-flex min-h-10 shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#B8922A] ${activeTab === 'voting' ? 'bg-[#B8922A] text-[#1A1A1A]' : 'text-gray-300 hover:bg-[#2C2C2C] hover:text-white'}`}
+                >
+                  <Vote className="h-4 w-4" aria-hidden="true" />
+                  <span className="hidden sm:inline">Voting</span>
+                </button>
+            )}
             {supportHref && (
                 <a
                     href={supportHref}
@@ -183,6 +193,15 @@ export default function Navbar({ user, onLogout, activeTab, onSelectTab, onSelec
                       </button>
                   );
                 })}
+                {user.role === 'admin' && supportHref && (
+                    <a
+                        href={supportHref}
+                        aria-current={activeTab === 'support' ? 'page' : undefined}
+                        className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all ${activeTab === 'support' ? 'bg-[#B8922A] text-[#1A1A1A] font-bold shadow' : 'text-gray-300 hover:bg-[#2C2C2C] hover:text-white'}`}
+                    >
+                      <HelpCircle className="h-4 w-4 shrink-0" /> Support
+                    </a>
+                )}
                 {user.role === 'admin' && (
                     <button
                         id="mobile-tab-link-admin"
