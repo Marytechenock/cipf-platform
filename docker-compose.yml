@@ -1,0 +1,71 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: maz-winter-school-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      UPLOAD_DIR: /app/uploads
+
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://maztechplatform.co.zw}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET}
+      AUTH_TOKEN_TTL: ${AUTH_TOKEN_TTL:-7d}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://maztechplatform.co.zw}
+
+      ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-admin@maz.co.zw}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD}
+      ADMIN_BOOTSTRAP_FORCE_RESET: ${ADMIN_BOOTSTRAP_FORCE_RESET:-false}
+      ADMIN_BOOTSTRAP_FIRST_NAME: ${ADMIN_BOOTSTRAP_FIRST_NAME:-System}
+      ADMIN_BOOTSTRAP_LAST_NAME: ${ADMIN_BOOTSTRAP_LAST_NAME:-Administrator}
+      SUPER_ADMIN_BOOTSTRAP_EMAIL: ${SUPER_ADMIN_BOOTSTRAP_EMAIL:-}
+      SUPER_ADMIN_BOOTSTRAP_PASSWORD: ${SUPER_ADMIN_BOOTSTRAP_PASSWORD:-}
+      SUPER_ADMIN_BOOTSTRAP_FIRST_NAME: ${SUPER_ADMIN_BOOTSTRAP_FIRST_NAME:-System}
+      SUPER_ADMIN_BOOTSTRAP_LAST_NAME: ${SUPER_ADMIN_BOOTSTRAP_LAST_NAME:-Owner}
+
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-maz_winter_school}
+      DB_USER: ${DB_USER:-maz_events}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_SSL: "false"
+      DB_AUTO_CREATE: "false"
+
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-MAZ Business Institute <no-reply@maztechplatform.co.zw>}
+    volumes:
+      - maz_uploads:/app/uploads
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: maz-winter-school-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-maz_winter_school}
+      POSTGRES_USER: ${DB_USER:-maz_events}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - maz_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-maz_user} -d ${DB_NAME:-maz_winter_school}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  maz_postgres_data:
+  maz_uploads:

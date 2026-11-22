@@ -1,0 +1,6 @@
+{
+  "name": "MAZ Kariba Winter School 2026 EMS",
+  "description": "Event Management System for MAZ Kariba Winter School 2026 - schedule, notes, previous cohorts, sponsors, activities, and AI feedback chatbot.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
