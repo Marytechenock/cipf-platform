@@ -29,7 +29,7 @@ import { navigateTo, parseAppRoute } from './lib/routing';
 import {
     Sparkles, ShieldCheck, MapPin, Compass, Award, Calendar,
     Map, Star, MessageSquareHeart, Heart, Send, CheckCircle2,
-    ChevronLeft, ChevronRight, Eye, EyeOff, Play, X, User as UserIcon, Lock,
+    ChevronLeft, ChevronRight, Eye, EyeOff, Play, X, User as UserIcon, Lock, Mail,
     Image as ImageIcon, Users, GraduationCap, Briefcase, Globe, Wind, Bath, Shield, Car,
     Building2, Trophy, ExternalLink, Quote, Tv, Sunset, Ship, PawPrint, Bike, Clock,
     Bed, Utensils, Waves, Target, Zap, Package, Phone
@@ -42,6 +42,7 @@ import mimsLogo from '@/assets/images/mims logo.png';
 import immLogo from '@/assets/images/IMM.jpeg';
 import midpLogo from '@/assets/images/MAZ MIDP.png';
 import fallsHeroImage from '@/assets/images/falls4.avif';
+import loginBuildingImage from '@/assets/images/login-building.png';
 
 const AdminRoute = lazy(() => import('./components/admin/AdminRoute'));
 const SuperAdminPortal = lazy(() => import('./components/superadmin/SuperAdminPortal'));
@@ -69,7 +70,7 @@ export default function App() {
     // Login form status
     const [loginEmail, setLoginEmail] = useState('');
     const [memberIdentifier, setMemberIdentifier] = useState('');
-    const [loginMode, setLoginMode] = useState<'member' | 'account'>('member');
+    const [loginMode, setLoginMode] = useState<'member' | 'account'>('account');
     const [loginPassword, setLoginPassword] = useState('');
     const [showLoginPassword, setShowLoginPassword] = useState(false);
     const [rememberMe, setRememberMe] = useState(true);
@@ -512,89 +513,113 @@ export default function App() {
             />}
 
             {/* Main Core View Area */}
-            <main className="flex-1 bg-gradient-to-b from-white to-gray-50/50">
+            <main className={isLoginPage ? 'flex flex-1 bg-sky-100' : 'flex-1 bg-gradient-to-b from-white to-gray-50/50'}>
 
                 {isLoginPage ? (
                     /* --- LOGIN VIEW SCREEN --- */
-                    <div className="mx-auto max-w-md px-4 py-20 animate-fadeIn">
-                        <div className="rounded-3xl border border-[#B8922A]/20 bg-white p-8 shadow-2xl space-y-6">
+                    <div className="relative isolate flex min-h-[100svh] w-full items-center justify-center overflow-hidden bg-sky-100 px-4 py-8 sm:px-8 animate-fadeIn">
+                        <div aria-hidden="true" className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${loginBuildingImage})` }} />
+                        <div aria-hidden="true" className="absolute inset-0 bg-gradient-to-r from-white/5 via-white/10 to-white/30" />
+                        <div aria-hidden="true" className="absolute -right-24 -top-44 hidden h-[135%] w-2/5 rotate-[37deg] bg-white/25 lg:block" />
+                        <div aria-hidden="true" className="pointer-events-none absolute -right-10 bottom-0 hidden w-[410px] flex-col gap-1.5 overflow-hidden opacity-80 lg:flex">
+                            <div className="flex translate-x-[285px] gap-1.5"><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#dedede]/75" /></div>
+                            <div className="flex translate-x-[215px] gap-1.5"><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#ecd19f]/80" /><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#dfdfdf]/70" /></div>
+                            <div className="flex translate-x-[145px] gap-1.5"><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#d9d9d9]/75" /><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#e1e1e1]/75" /></div>
+                            <div className="flex translate-x-[75px] gap-1.5"><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#e9e0d0]/75" /><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#d9d9d9]/75" /><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#e4e4e4]/75" /></div>
+                            <div className="flex gap-1.5"><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#d9d9d9]/75" /><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#dedede]/75" /><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#e9e0d0]/75" /><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#d9d9d9]/75" /></div>
+                            <div className="flex translate-x-[55px] gap-1.5"><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#e2e2e2]/75" /><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#dedede]/75" /><span className="h-9 w-28 shrink-0 rounded-[4px] bg-[#e3e3e3]/75" /></div>
+                        </div>
+                        <div aria-hidden="true" className="absolute inset-x-0 bottom-0 h-1.5 bg-[#f97316]" />
+                        <section aria-label="Board election information" className="absolute right-[5%] top-[42%] hidden w-[300px] -translate-y-1/2 text-slate-900 xl:block">
+                            <p className="inline-flex items-center gap-2 rounded-full border border-[#b45309]/20 bg-white/70 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-[#92400e] backdrop-blur-sm">
+                                <span className="h-1.5 w-1.5 rounded-full bg-[#ea580c]" /> 2026 Board Elections
+                            </p>
+                            <h2 className="mt-5 text-[30px] font-extrabold leading-[1.12] tracking-tight text-slate-950">Your voice on the Board.</h2>
+                            <div className="mt-4 h-1 w-12 rounded-full bg-[#f97316]" />
+                            <p className="mt-4 text-[13px] font-medium leading-relaxed text-slate-700">Electing three representatives to serve on the Board:</p>
+                            <div className="mt-4 space-y-2 text-xs font-semibold text-slate-800">
+                                <div className="flex items-center gap-3 border-b border-slate-500/20 pb-2"><span className="text-[#c2410c]">01</span> Employee Representative</div>
+                                <div className="flex items-center gap-3 border-b border-slate-500/20 pb-2"><span className="text-[#c2410c]">02</span> CIFOZ Employer Representative</div>
+                                <div className="flex items-center gap-3"><span className="text-[#c2410c]">03</span> ZBCA Employer Representative</div>
+                            </div>
+                        </section>
+                        <div className="relative z-10 w-full max-w-[360px] space-y-3 rounded-2xl border border-white/80 bg-white/95 p-5 shadow-[0_24px_55px_rgba(15,23,42,0.22)] backdrop-blur-sm sm:p-6">
 
                             {/* Login header details */}
-                            <div className="text-center space-y-2">
-                                <div className="mx-auto flex h-16 w-40 items-center justify-center rounded-2xl ">
+                            <div className="text-center">
+                                <div className="mx-auto flex w-[140px] items-center justify-center">
                                     <img
                                         src={logo}
-                                        alt="Maz logo"
-                                        className="h-full w-full object-cover"
+                                        alt="CIPF logo"
+                                        width="140"
+                                        height="58"
+                                        className="block h-auto w-full object-contain"
                                     />
                                 </div>
-                                {/*<h1 className="text-lg font-black text-[#1A1A1A] tracking-wider uppercase">18th Annual Marketers Convention 2026</h1>*/}
-                                {/*<p className="text-[11px] font-extrabold text-[#8B6914] uppercase tracking-widest">Attendee Authentication</p>*/}
-                                {/*<div className="mx-auto h-[1.5px] w-12 bg-gradient-to-r from-transparent via-[#B8922A] to-transparent pt-0.5" />*/}
+                                <div className="my-2 h-px w-full bg-gradient-to-r from-transparent via-[#f97316] to-transparent" />
+                                <h1 className="text-lg font-bold tracking-tight text-[#252525]">{loginMode === 'member' ? 'Member Voting' : 'Sign In'}</h1>
+                                <p className="mt-0.5 text-xs text-slate-700">{loginMode === 'member' ? 'Use your identifier to access your ballot' : 'Access your account to continue'}</p>
                             </div>
 
                             {(loginNotice || loginError) && (
-                                <div className="rounded-xl bg-red-50 border border-red-200.5 p-3.5 text-xs font-semibold text-red-600 animate-pulse text-center">
-                                    ⚠️ {loginNotice || loginError}
+                                <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-2.5 text-xs font-medium text-red-700">
+                                    {loginNotice || loginError}
                                 </div>
                             )}
 
-                            <form onSubmit={handleLoginSubmit} className="space-y-4">
+                            <form onSubmit={handleLoginSubmit} className="space-y-2">
                                 {loginMode === 'member' ? (
                                     <div>
-                                        <label htmlFor="member-identifier" className="block text-[11px] font-black text-gray-500 uppercase tracking-widest mb-1.5">Voter identifier</label>
-                                        <input
-                                            type="text"
-                                            required
-                                            id="member-identifier"
-                                            autoComplete="off"
-                                            value={memberIdentifier}
-                                            onChange={(e) => setMemberIdentifier(e.target.value)}
-                                            placeholder="Enter your identifier"
-                                            className="w-full text-xs font-semibold rounded-xl border border-gray-300 px-4 py-3 focus:border-[#B8922A] focus:outline-none focus:ring-1 focus:ring-[#B8922A] bg-gray-50/50"
-                                        />
-                                        <p className="mt-2 text-xs text-gray-500">Use the identifier on the eligible voter list to access your ballot.</p>
+                                        <label htmlFor="member-identifier" className="sr-only">Voter identifier</label>
+                                        <div className="relative">
+                                            <UserIcon aria-hidden="true" className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                                            <input
+                                                type="text"
+                                                required
+                                                id="member-identifier"
+                                                autoComplete="off"
+                                                value={memberIdentifier}
+                                                onChange={(e) => setMemberIdentifier(e.target.value)}
+                                                placeholder="Voter identifier"
+                                                className="min-h-10 w-full rounded-lg border border-slate-300 bg-white/85 py-2 pl-12 pr-4 text-xs text-slate-900 outline-none focus:border-[#f97316] focus:ring-2 focus:ring-[#f97316]/20"
+                                            />
+                                        </div>
+                                        <p className="mt-1.5 text-[11px] text-slate-700">Enter the identifier on the eligible voter list.</p>
                                     </div>
                                 ) : (<>
-                                <div>
-                                    <label className="block text-[11px] font-black text-gray-500 uppercase tracking-widest mb-1.5">Email</label>
+                                <div className="relative">
+                                    <label htmlFor="login-email" className="sr-only">Email address</label>
+                                    <Mail aria-hidden="true" className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600" />
                                     <input
-                                        type="text"
+                                        type="email"
                                         required
                                         id="login-email"
+                                        autoComplete="username"
                                         value={loginEmail}
                                         onChange={(e) => setLoginEmail(e.target.value)}
                                         placeholder="Email address"
-                                        className="w-full text-xs font-semibold rounded-xl border border-gray-300 px-4 py-3 focus:border-[#B8922A] focus:outline-none focus:ring-1 focus:ring-[#B8922A] bg-gray-50/50"
+                                        className="min-h-10 w-full rounded-lg border border-slate-300 bg-white/85 py-2 pl-12 pr-4 text-xs text-slate-900 outline-none focus:border-[#f97316] focus:ring-2 focus:ring-[#f97316]/20"
                                     />
                                 </div>
 
                                 <div>
-                                    <div className="flex items-center justify-between mb-1.5">
-                                        <label className="block text-[11px] font-black text-gray-500 uppercase tracking-widest">Password</label>
-                                        <button
-                                            type="button"
-                                            id="link-forgot-pwd"
-                                            onClick={handleForgotPasswordClick}
-                                            className="text-[10px] font-black text-[#8B6914] hover:text-amber-500 uppercase tracking-widest"
-                                        >
-                                            Forgot? Get Help
-                                        </button>
-                                    </div>
+                                    <label htmlFor="login-password" className="sr-only">Password</label>
                                     <div className="relative">
+                                        <Lock aria-hidden="true" className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600" />
                                         <input
                                             type={showLoginPassword ? 'text' : 'password'}
                                             required
                                             id="login-password"
+                                            autoComplete="current-password"
                                             value={loginPassword}
                                             onChange={(e) => setLoginPassword(e.target.value)}
-                                            placeholder="Enter pass security phrase..."
-                                            className="w-full rounded-xl border border-gray-300 bg-gray-50/50 px-4 py-3 pr-11 text-xs font-semibold focus:border-[#B8922A] focus:outline-none focus:ring-1 focus:ring-[#B8922A]"
+                                            placeholder="Password"
+                                            className="min-h-10 w-full rounded-lg border border-slate-300 bg-white/85 py-2 pl-12 pr-12 text-xs text-slate-900 outline-none focus:border-[#f97316] focus:ring-2 focus:ring-[#f97316]/20"
                                         />
                                         <button
                                             type="button"
                                             onClick={() => setShowLoginPassword(current => !current)}
-                                            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 transition hover:text-[#8B6914]"
+                                            className="absolute right-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center text-slate-500 transition hover:text-[#ea580c]"
                                             aria-label={showLoginPassword ? 'Hide password' : 'Show password'}
                                         >
                                             {showLoginPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -603,67 +628,38 @@ export default function App() {
                                 </div>
 
                                 {/* Remember Me Option */}
-                                <div className="flex items-center justify-between text-xs font-semibold text-gray-500 pt-1">
-                                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                                <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] text-slate-800">
+                                    <label className="flex cursor-pointer select-none items-center gap-2">
                                         <input
                                             type="checkbox"
                                             checked={rememberMe}
                                             onChange={(e) => setRememberMe(e.target.checked)}
-                                            className="rounded border-gray-300 text-[#B8922A] focus:ring-[#B8922A] h-4 w-4"
+                                            className="h-4 w-4 accent-[#f97316]"
                                         />
                                         Remember credentials
                                     </label>
+                                    <button type="button" id="link-forgot-pwd" onClick={handleForgotPasswordClick} className="font-medium text-[#ea580c] hover:underline">Forgot? Get Help</button>
                                 </div>
                                 </>)}
 
-                                <div className="pt-3">
+                                <div className="pt-1">
                                     <button
                                         type="submit"
                                         id="btn-login-submit"
                                         disabled={loginLoading}
-                                        className="w-full rounded-xl bg-[#1A1A1A] hover:bg-neutral-800 text-[#FFD700] hover:text-[#FFFFFF] py-3.5 shadow-lg text-xs font-black uppercase tracking-widest transition-all disabled:bg-gray-100 disabled:text-gray-400"
+                                        className="min-h-10 w-full rounded-lg bg-[#282828] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-black focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f97316] disabled:bg-slate-300"
                                     >
                                         {loginLoading ? 'Signing in...' : loginMode === 'member' ? 'Open my ballot' : 'Sign in'}
                                     </button>
                                 </div>
                             </form>
+                            <div className="flex items-center gap-3 text-[11px] font-medium text-slate-600" aria-hidden="true">
+                                <span className="h-px flex-1 bg-slate-200" />or<span className="h-px flex-1 bg-slate-200" />
+                            </div>
                             <button type="button" onClick={() => { setLoginMode(current => current === 'member' ? 'account' : 'member'); setLoginError(''); setLoginNotice(''); }}
-                                className="w-full text-center text-xs font-bold text-[#8B6914] hover:underline">
-                                {loginMode === 'member' ? 'Administrator or event staff sign in' : 'Member voting sign in'}
+                                className="min-h-10 w-full rounded-lg border-2 border-[#f97316] bg-white/85 px-4 py-2 text-xs font-semibold text-[#c2410c] transition-colors hover:bg-orange-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f97316]">
+                                {loginMode === 'member' ? 'Admin sign in' : 'Member voting sign in'}
                             </button>
-                            {/* Sponsor Logos */}
-                            {/*<div className="pt-6 border-t border-gray-100">*/}
-                            {/*    <div className="flex items-center justify-center gap-6">*/}
-                            {/*        <div className="flex h-2 w-22 items-center justify-center ">*/}
-                            {/*            <img*/}
-                            {/*                src={mimsLogo}*/}
-                            {/*                alt="Partner Logo 1"*/}
-                            {/*                className="h-16 w-20 object-contain"*/}
-                            {/*                onError={handlePartnerLogoError(logo)}*/}
-                            {/*            />*/}
-                            {/*        </div>*/}
-
-                            {/*        /!* Logo 2 *!/*/}
-                            {/*        <div className="flex h-12 w-22 items-center">*/}
-                            {/*            <img*/}
-                            {/*                src={immLogo}*/}
-                            {/*                alt="Partner Logo 2"*/}
-                            {/*                className="h-16 w-20 object-contain"*/}
-                            {/*                onError={handlePartnerLogoError(logo)}*/}
-                            {/*            />*/}
-                            {/*        </div>*/}
-
-                            {/*        /!* Logo 3 *!/*/}
-                            {/*        <div className="flex h-12 w-22 items-center">*/}
-                            {/*            <img*/}
-                            {/*                src={midpLogo}*/}
-                            {/*                alt="Partner Logo 3"*/}
-                            {/*                className="h-16 w-20 object-contain"*/}
-                            {/*                onError={handlePartnerLogoError(logo)}*/}
-                            {/*            />*/}
-                            {/*        </div>*/}
-                            {/*    </div>*/}
-                            {/*</div>*/}
                         </div>
                     </div>
                 ) : (
