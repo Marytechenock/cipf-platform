@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Activity, ChartNoAxesCombined, Download, LogOut, Moon, Search, Sun, UserPlus, Users, X } from 'lucide-react';
+import { Activity, ChartNoAxesCombined, Download, Eye, EyeOff, LogOut, Moon, Pencil, Search, Sun, Trash2, UserCheck, UserPlus, UserX, Users, X } from 'lucide-react';
 import { api } from '../../lib/api';
 import type { ApiAuditEntry, User } from '../../types';
 import SuperAdminMetrics from './SuperAdminMetrics';
@@ -17,6 +17,7 @@ export default function SuperAdminPortal({ user, onLogout }: { user: User; onLog
   const [tab, setTab] = useState<'metrics' | 'accounts' | 'logs'>('metrics');
   const [admins, setAdmins] = useState<User[]>([]);
   const [form, setForm] = useState<AccountForm>(emptyForm);
+  const [showPassword, setShowPassword] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -67,10 +68,11 @@ export default function SuperAdminPortal({ user, onLogout }: { user: User; onLog
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [selectedLog]);
-  const openCreate = () => { setEditingId(null); setForm(emptyForm); setShowForm(true); setError(''); setNotice(''); };
+  const openCreate = () => { setEditingId(null); setForm(emptyForm); setShowPassword(false); setShowForm(true); setError(''); setNotice(''); };
   const openEdit = (admin: User) => {
     setEditingId(admin.id);
     setForm({ firstName: admin.firstName, lastName: admin.lastName, email: admin.email || '', password: '' });
+    setShowPassword(false);
     setShowForm(true); setError(''); setNotice('');
   };
   const saveAccount = async (event: FormEvent) => {
@@ -81,7 +83,7 @@ export default function SuperAdminPortal({ user, onLogout }: { user: User; onLog
         : await api.createSuperAdminAccount(form);
       setAdmins(current => editingId ? current.map(item => item.id === result.admin.id ? result.admin : item) : [...current, result.admin]);
       setNotice(editingId ? 'Admin account updated.' : 'Admin account created. Share the temporary password through a secure channel.');
-      setForm(emptyForm); setShowForm(false); setEditingId(null);
+      setForm(emptyForm); setShowPassword(false); setShowForm(false); setEditingId(null);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save admin account.'); }
     finally { setBusy(false); }
   };
@@ -145,13 +147,30 @@ export default function SuperAdminPortal({ user, onLogout }: { user: User; onLog
             <label className="text-xs font-semibold">First name<input className="mt-1 w-full rounded-lg border border-slate-300 bg-white p-2.5 text-sm dark:border-slate-600 dark:bg-[#11161D] dark:text-slate-100" required value={form.firstName} onChange={e => setForm(current => ({ ...current, firstName: e.target.value }))} /></label>
             <label className="text-xs font-semibold">Last name<input className="mt-1 w-full rounded-lg border border-slate-300 bg-white p-2.5 text-sm dark:border-slate-600 dark:bg-[#11161D] dark:text-slate-100" required value={form.lastName} onChange={e => setForm(current => ({ ...current, lastName: e.target.value }))} /></label>
             <label className="text-xs font-semibold">Email<input type="email" className="mt-1 w-full rounded-lg border border-slate-300 bg-white p-2.5 text-sm dark:border-slate-600 dark:bg-[#11161D] dark:text-slate-100" required value={form.email} onChange={e => setForm(current => ({ ...current, email: e.target.value }))} /></label>
-            <label className="text-xs font-semibold">{editingId ? 'New password (optional)' : 'Temporary password'}<input type="password" minLength={12} className="mt-1 w-full rounded-lg border border-slate-300 bg-white p-2.5 text-sm dark:border-slate-600 dark:bg-[#11161D] dark:text-slate-100" required={!editingId} value={form.password} onChange={e => setForm(current => ({ ...current, password: e.target.value }))} /></label>
-            <div className="flex gap-2 sm:col-span-2"><button disabled={busy} className="rounded-lg bg-[#1A1A1A] px-4 py-2 text-sm font-bold text-white disabled:opacity-50 dark:bg-amber-300 dark:text-slate-950">{busy ? 'Saving...' : 'Save admin'}</button><button type="button" onClick={() => { setShowForm(false); setForm(emptyForm); }} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold dark:border-slate-600">Cancel</button></div>
+            <div className="text-xs font-semibold">
+              <label htmlFor="super-admin-password">{editingId ? 'New password' : 'Temporary password'}</label>
+              <div className="relative mt-1">
+                <input id="super-admin-password" type={showPassword ? 'text' : 'password'} minLength={12} autoComplete="new-password" className="w-full rounded-lg border border-slate-300 bg-white p-2.5 pr-11 text-sm dark:border-slate-600 dark:bg-[#11161D] dark:text-slate-100" required={!editingId} value={form.password} onChange={e => setForm(current => ({ ...current, password: e.target.value }))} />
+                <button type="button" onClick={() => setShowPassword(current => !current)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} title={showPassword ? 'Hide password' : 'Show password'} className="absolute inset-y-0 right-0 flex w-10 items-center justify-center rounded-r-lg text-slate-500 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-500 dark:text-slate-400 dark:hover:text-white">
+                  {showPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+                </button>
+              </div>
+            </div>
+            <div className="flex gap-2 sm:col-span-2"><button disabled={busy} className="rounded-lg bg-[#1A1A1A] px-4 py-2 text-sm font-bold text-white disabled:opacity-50 dark:bg-amber-300 dark:text-slate-950">{busy ? 'Saving...' : 'Save admin'}</button><button type="button" onClick={() => { setShowForm(false); setForm(emptyForm); setShowPassword(false); }} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold dark:border-slate-600">Cancel</button></div>
           </form>}
           <div className="mt-6 overflow-x-auto">
             <table className="w-full min-w-[610px] text-left text-sm">
               <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase text-slate-500 dark:border-slate-700 dark:bg-[#202A36] dark:text-slate-300"><tr><th className="p-3">Name</th><th className="p-3">Email</th><th className="p-3">Status</th><th className="p-3">Actions</th></tr></thead>
-              <tbody>{admins.map(admin => <tr key={admin.id} className="border-b border-slate-100 dark:border-slate-700"><td className="p-3 font-semibold">{admin.firstName} {admin.lastName}</td><td className="p-3">{admin.email}</td><td className="p-3"><span className={`rounded-full px-2 py-1 text-xs font-bold ${admin.status === 'active' ? 'bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-200'}`}>{admin.status === 'active' ? 'Active' : 'Deactivated'}</span></td><td className="p-3"><div className="flex gap-3 text-xs font-bold"><button type="button" onClick={() => openEdit(admin)} className="text-[#8B6914] dark:text-amber-300">Edit</button><button type="button" disabled={busy} onClick={() => void toggleStatus(admin)} className="text-slate-600 dark:text-slate-300">{admin.status === 'active' ? 'Deactivate' : 'Reactivate'}</button><button type="button" disabled={busy} onClick={() => void deleteAccount(admin)} className="text-red-600 dark:text-red-300">Delete</button></div></td></tr>)}</tbody>
+              <tbody>{admins.map(admin => <tr key={admin.id} className="border-b border-slate-100 dark:border-slate-700">
+                <td className="p-3 font-semibold">{admin.firstName} {admin.lastName}</td>
+                <td className="p-3">{admin.email}</td>
+                <td className="p-3"><span className={`rounded-full px-2 py-1 text-xs font-bold ${admin.status === 'active' ? 'bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-200'}`}>{admin.status === 'active' ? 'Active' : 'Deactivated'}</span></td>
+                <td className="p-3"><div className="flex items-center gap-2">
+                  <button type="button" onClick={() => openEdit(admin)} aria-label={`Edit ${admin.firstName} ${admin.lastName}`} title="Edit admin" className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-amber-200 bg-amber-50 text-amber-800 transition hover:bg-amber-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-500 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300 dark:hover:bg-amber-950/60"><Pencil size={16} aria-hidden="true" /></button>
+                  <button type="button" disabled={busy} onClick={() => void toggleStatus(admin)} aria-label={`${admin.status === 'active' ? 'Deactivate' : 'Reactivate'} ${admin.firstName} ${admin.lastName}`} title={admin.status === 'active' ? 'Deactivate admin' : 'Reactivate admin'} className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 transition hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-500 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">{admin.status === 'active' ? <UserX size={17} aria-hidden="true" /> : <UserCheck size={17} aria-hidden="true" />}</button>
+                  <button type="button" disabled={busy} onClick={() => void deleteAccount(admin)} aria-label={`Delete ${admin.firstName} ${admin.lastName}`} title="Delete admin" className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-red-200 bg-red-50 text-red-600 transition hover:bg-red-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500 disabled:opacity-50 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300 dark:hover:bg-red-950/60"><Trash2 size={16} aria-hidden="true" /></button>
+                </div></td>
+              </tr>)}</tbody>
             </table>
             {admins.length === 0 && <p className="py-8 text-center text-sm text-slate-500 dark:text-slate-400">No admin accounts found.</p>}
           </div>
