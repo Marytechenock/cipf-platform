@@ -1411,7 +1411,7 @@ export async function createApp(options: CreateAppOptions = {}) {
 
       res.json({
         success: true,
-        message: 'Password recovery is handled by the MAZ support team. Please contact the administrator to reset your access securely.'
+        message: 'Password recovery is handled by the Marytechenock Solutions support team. Please contact the administrator to reset your access securely.'
       });
     } catch (error) {
       res.locals.auditCause = error instanceof Error ? error.message : String(error);

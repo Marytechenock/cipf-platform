@@ -27,7 +27,7 @@ import type {
 
 const AUTH_COOKIE_NAME = 'cipf_auth';
 const TEST_AUTH_SECRET = 'test-auth-secret';
-const SUPPORT_MESSAGE = 'Password recovery is handled by the MAZ support team. Please contact the administrator to reset your access securely.';
+const SUPPORT_MESSAGE = 'Password recovery is handled by the Marytechenock Solutions support team. Please contact the administrator to reset your access securely.';
 
 type TestDatabase = ReturnType<typeof createTestDatabase>;
 
