@@ -259,6 +259,9 @@ export interface Election {
   title: string;
   description: string;
   status: ElectionStatus;
+  /** Stored control state. A scheduled daily election follows its configured hours. */
+  controlStatus?: ElectionStatus;
+  scheduleMode?: 'continuous' | 'daily';
   boardSeats: number;
   startsAt?: string;
   endsAt?: string;

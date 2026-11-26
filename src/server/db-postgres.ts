@@ -34,6 +34,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
+import { getEffectiveElectionStatus } from '../lib/electionSchedule';
 import { findAttendanceSession } from '../config/attendanceSessions';
 import { officialProgrammeSessions, sortSessionsInProgrammeOrder } from '../config/programmeSessions';
 import { SessionQuestionStore } from './session-question-store';
@@ -337,6 +338,7 @@ export class PostgresDatabase {
                     starts_at TIMESTAMP NULL,
                     ends_at TIMESTAMP NULL,
                     timezone VARCHAR(80) DEFAULT 'Africa/Harare',
+                    schedule_mode VARCHAR(20) NOT NULL DEFAULT 'continuous',
                     created_by VARCHAR(50) REFERENCES users(id) ON DELETE SET NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -347,6 +349,7 @@ export class PostgresDatabase {
             await client.query(`ALTER TABLE elections ADD COLUMN IF NOT EXISTS starts_at TIMESTAMP NULL;`);
             await client.query(`ALTER TABLE elections ADD COLUMN IF NOT EXISTS ends_at TIMESTAMP NULL;`);
             await client.query(`ALTER TABLE elections ADD COLUMN IF NOT EXISTS timezone VARCHAR(80) DEFAULT 'Africa/Harare';`);
+            await client.query(`ALTER TABLE elections ADD COLUMN IF NOT EXISTS schedule_mode VARCHAR(20) NOT NULL DEFAULT 'continuous';`);
 
             await client.query(`
                 CREATE TABLE IF NOT EXISTS election_candidates (
@@ -2227,16 +2230,20 @@ export class PostgresDatabase {
         const rawStatus = row.status as Election['status'];
         const startsAt = row.startsAt ? (row.startsAt instanceof Date ? row.startsAt.toISOString() : row.startsAt) : undefined;
         const endsAt = row.endsAt ? (row.endsAt instanceof Date ? row.endsAt.toISOString() : row.endsAt) : undefined;
-        const status = this.getEffectiveElectionStatus({ status: rawStatus, startsAt, endsAt } as Election);
+        const scheduleMode = row.scheduleMode === 'daily' ? 'daily' : 'continuous';
+        const timezone = row.timezone || 'Africa/Harare';
+        const status = getEffectiveElectionStatus({ status: rawStatus, controlStatus: rawStatus, startsAt, endsAt, timezone, scheduleMode } as Election);
         return {
             id: row.id,
             title: row.title,
             description: row.description || '',
             status,
+            controlStatus: rawStatus,
+            scheduleMode,
             boardSeats: Number(row.boardSeats ?? row.board_seats ?? 1),
             startsAt,
             endsAt,
-            timezone: row.timezone || 'Africa/Harare',
+            timezone,
             createdBy: row.createdBy || row.created_by || '',
             createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
             updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
@@ -2245,40 +2252,12 @@ export class PostgresDatabase {
         };
     }
 
-    private getEffectiveElectionStatus(election: Election): Election['status'] {
-        if (election.status === 'closed') return 'closed';
-        if (election.status === 'draft') return 'draft';
-        const now = this.getZonedNowParts(election.timezone || 'Africa/Harare');
-        if (election.endsAt && now >= this.getWallClockComparable(election.endsAt)) return 'closed';
-        if (election.startsAt && now < this.getWallClockComparable(election.startsAt)) return 'scheduled';
-        return 'open';
-    }
-
-    private getZonedNowParts(timezone: string) {
-        const parts = new Intl.DateTimeFormat('en-CA', {
-            timeZone: timezone,
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-            hour12: false
-        }).formatToParts(new Date());
-        const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
-        return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}:${values.second}`;
-    }
-
-    private getWallClockComparable(value: string) {
-        return value.replace(' ', 'T').slice(0, 19);
-    }
-
     async getActiveElection(): Promise<Election | undefined> {
         const result = await this.pool.query(`
             SELECT id, title, description, status, board_seats as "boardSeats",
                    to_char(starts_at, 'YYYY-MM-DD"T"HH24:MI:SS') as "startsAt",
                    to_char(ends_at, 'YYYY-MM-DD"T"HH24:MI:SS') as "endsAt",
-                   timezone,
+                   timezone, schedule_mode as "scheduleMode",
                    created_by as "createdBy", created_at as "createdAt", updated_at as "updatedAt",
                    opened_at as "openedAt", closed_at as "closedAt"
             FROM elections
@@ -2293,7 +2272,7 @@ export class PostgresDatabase {
             SELECT id, title, description, status, board_seats as "boardSeats",
                    to_char(starts_at, 'YYYY-MM-DD"T"HH24:MI:SS') as "startsAt",
                    to_char(ends_at, 'YYYY-MM-DD"T"HH24:MI:SS') as "endsAt",
-                   timezone,
+                   timezone, schedule_mode as "scheduleMode",
                    created_by as "createdBy", created_at as "createdAt", updated_at as "updatedAt",
                    opened_at as "openedAt", closed_at as "closedAt"
             FROM elections
@@ -2304,8 +2283,8 @@ export class PostgresDatabase {
 
     async saveElection(election: Election): Promise<Election> {
         const result = await this.pool.query(`
-            INSERT INTO elections (id, title, description, status, board_seats, starts_at, ends_at, timezone, created_by, created_at, updated_at, opened_at, closed_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            INSERT INTO elections (id, title, description, status, board_seats, starts_at, ends_at, timezone, schedule_mode, created_by, created_at, updated_at, opened_at, closed_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             ON CONFLICT (id) DO UPDATE SET
                 title = EXCLUDED.title,
                 description = EXCLUDED.description,
@@ -2314,6 +2293,7 @@ export class PostgresDatabase {
                 starts_at = EXCLUDED.starts_at,
                 ends_at = EXCLUDED.ends_at,
                 timezone = EXCLUDED.timezone,
+                schedule_mode = EXCLUDED.schedule_mode,
                 updated_at = EXCLUDED.updated_at,
                 opened_at = EXCLUDED.opened_at,
                 closed_at = EXCLUDED.closed_at
@@ -2327,6 +2307,7 @@ export class PostgresDatabase {
             election.startsAt || null,
             election.endsAt || null,
             election.timezone || 'Africa/Harare',
+            election.scheduleMode || 'continuous',
             election.createdBy,
             election.createdAt,
             election.updatedAt,
@@ -2343,10 +2324,10 @@ export class PostgresDatabase {
         const client = await this.pool.connect();
         try {
             await client.query('BEGIN');
-            if (status === 'open') {
+            if (status === 'open' || status === 'scheduled') {
                 await client.query(
-                    `UPDATE elections SET status = 'closed', closed_at = COALESCE(closed_at, $1::timestamp), updated_at = $1::timestamp WHERE status = 'open'`,
-                    [now]
+                    `UPDATE elections SET status = 'closed', closed_at = COALESCE(closed_at, $1::timestamp), updated_at = $1::timestamp WHERE status IN ('open', 'scheduled') AND id <> $2`,
+                    [now, id]
                 );
             }
             await client.query(

@@ -4,6 +4,8 @@ import type { Server } from 'node:http';
 import path from 'path';
 import { getDb } from './src/server/db-postgres';
 import { getEventPhotoAlbums, isGoogleDriveFolderUrl } from './src/lib/eventPhotoAlbums';
+import { isValidAdminPassword } from './src/lib/adminPasswordPolicy';
+import { getEffectiveElectionStatus, isValidElectionTimezone, parseElectionScheduleDate } from './src/lib/electionSchedule';
 import {
   AdminUserListQuery,
   ApiAuditEntry,
@@ -142,59 +144,6 @@ function normalizeOptionalDate(value: unknown): string | undefined {
   if (!raw) return undefined;
   const date = new Date(raw);
   return Number.isNaN(date.getTime()) ? undefined : raw.replace(' ', 'T').slice(0, 19);
-}
-
-function getTimeZoneOffsetMillis(timezone: string, date: Date) {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: timezone || 'Africa/Harare',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  }).formatToParts(date);
-  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
-  const asUtc = Date.UTC(
-      Number(values.year),
-      Number(values.month) - 1,
-      Number(values.day),
-      Number(values.hour),
-      Number(values.minute),
-      Number(values.second)
-  );
-  return asUtc - date.getTime();
-}
-
-function parseElectionScheduleDate(value?: string, timezone: string = 'Africa/Harare') {
-  if (!value) return null;
-  if (/(Z|[+-]\d{2}:\d{2})$/.test(value)) {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-  const [datePart, timePart = '00:00:00'] = value.replace(' ', 'T').split('T');
-  const [year, month, day] = datePart.split('-').map(Number);
-  const [hour = 0, minute = 0, second = 0] = timePart.split(':').map(Number);
-  const utcGuess = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
-  if (Number.isNaN(utcGuess.getTime())) return null;
-  const offset = getTimeZoneOffsetMillis(timezone, utcGuess);
-  return new Date(utcGuess.getTime() - offset);
-}
-
-function getScheduleStatus(startsAt?: string, endsAt?: string, timezone: string = 'Africa/Harare', now = new Date()): Election['status'] {
-  const startDate = parseElectionScheduleDate(startsAt, timezone);
-  const endDate = parseElectionScheduleDate(endsAt, timezone);
-  if (endDate && now >= endDate) return 'closed';
-  if (startDate && now < startDate) return 'scheduled';
-  return 'open';
-}
-
-function getEffectiveElectionStatus(election: Election, now = new Date()): Election['status'] {
-  if (election.status === 'closed') return 'closed';
-  if (election.status === 'draft') return 'draft';
-
-  return getScheduleStatus(election.startsAt, election.endsAt, election.timezone, now);
 }
 
 function normalizeElectionCategory(value: unknown): ElectionCandidateCategory {
@@ -1401,6 +1350,36 @@ export async function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  // Admins can replace the password issued by a super admin without changing account details.
+  app.post('/api/auth/change-password', requireAdmin, async (req, res) => {
+    try {
+      const user = await getAuthUser(req);
+      if (!user || user.role !== 'admin') return res.status(401).json({ error: 'Please sign in again.' });
+      const currentPassword = req.body?.currentPassword;
+      const newPassword = req.body?.newPassword;
+      if (typeof currentPassword !== 'string' || typeof newPassword !== 'string') {
+        return res.status(400).json({ error: 'Enter your current and new passwords.' });
+      }
+      if (!user.password || !await bcrypt.compare(currentPassword, user.password)) {
+        res.locals.auditCause = 'Current admin password did not match.';
+        return res.status(400).json({ error: 'Current password is incorrect.' });
+      }
+      if (!isValidAdminPassword(newPassword)) {
+        return res.status(400).json({ error: 'New password needs at least 8 characters, an uppercase letter, a number, and a special character (maximum 72 bytes).' });
+      }
+      if (await bcrypt.compare(newPassword, user.password)) {
+        return res.status(400).json({ error: 'Choose a new password different from your current password.' });
+      }
+      await db.saveUser({ ...user, password: await bcrypt.hash(newPassword, 12), hasSetPassword: true });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ success: true, message: 'Password changed. Use your new password the next time you sign in.' });
+    } catch (error) {
+      res.locals.auditCause = error instanceof Error ? error.message : String(error);
+      console.error('Admin password change failed:', error);
+      res.status(500).json({ error: 'Could not change your password.' });
+    }
+  });
+
   // Forgot password
   app.post('/api/auth/forgot-password', async (req, res) => {
     try {
@@ -2271,19 +2250,26 @@ Ensure the JSON block is completely valid and correctly placed.`;
       const startsAt = normalizeOptionalDate(req.body.startsAt);
       const endsAt = normalizeOptionalDate(req.body.endsAt);
       const timezone = String(req.body.timezone || existing?.timezone || 'Africa/Harare').trim() || 'Africa/Harare';
+      const scheduleMode = req.body.scheduleMode === 'daily' ? 'daily' : 'continuous';
+      if (!isValidElectionTimezone(timezone)) return res.status(400).json({ error: 'Choose a valid election timezone.' });
       const startDate = parseElectionScheduleDate(startsAt, timezone);
       const endDate = parseElectionScheduleDate(endsAt, timezone);
+      if ((req.body.startsAt && !startDate) || (req.body.endsAt && !endDate)) {
+        return res.status(400).json({ error: 'Enter valid voting start and end dates.' });
+      }
+      if (scheduleMode === 'daily') {
+        if (!startDate || !endDate) return res.status(400).json({ error: 'Set the first and last voting days and daily opening and closing times.' });
+        if (startsAt!.slice(11, 16) >= endsAt!.slice(11, 16)) {
+          return res.status(400).json({ error: 'The daily closing time must be after the daily opening time.' });
+        }
+      }
       if (startDate && endDate && endDate.getTime() <= startDate.getTime()) {
         return res.status(400).json({ error: 'Voting closes time must be after voting opens time.' });
       }
-      const scheduleChanged = Boolean(existing) && (
-        (existing?.startsAt || '') !== (startsAt || '')
-        || (existing?.endsAt || '') !== (endsAt || '')
-        || (existing?.timezone || 'Africa/Harare') !== timezone
-      );
-      const status = scheduleChanged
-        ? getScheduleStatus(startsAt, endsAt, timezone)
-        : existing?.status || normalizeElectionStatus(req.body.status);
+      const previousControl = existing?.controlStatus || existing?.status;
+      const status = scheduleMode === 'daily' && existing?.scheduleMode !== 'daily' && previousControl === 'open'
+        ? 'scheduled'
+        : previousControl || normalizeElectionStatus(req.body.status);
       const now = new Date().toISOString();
       const election = await db.saveElection({
         id: existing?.id || `el_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
@@ -2294,6 +2280,7 @@ Ensure the JSON block is completely valid and correctly placed.`;
         startsAt,
         endsAt,
         timezone,
+        scheduleMode,
         createdBy: existing?.createdBy || admin.id,
         createdAt: existing?.createdAt || now,
         updatedAt: now,

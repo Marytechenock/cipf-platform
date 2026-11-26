@@ -126,6 +126,19 @@ function createTestDatabase() {
     async getElection(id: string) {
       return state.elections.find(election => election.id === id);
     },
+    async saveElection(election: Election) {
+      const index = state.elections.findIndex(item => item.id === election.id);
+      if (index >= 0) state.elections[index] = { ...election, controlStatus: election.status };
+      else state.elections.push({ ...election, controlStatus: election.status });
+      return state.elections.find(item => item.id === election.id)!;
+    },
+    async updateElectionStatus(id: string, status: Election['status']) {
+      const election = state.elections.find(item => item.id === id);
+      if (!election) return undefined;
+      election.status = status;
+      election.controlStatus = status;
+      return election;
+    },
     async getActiveElection() {
       return state.elections[0];
     },
@@ -556,6 +569,36 @@ test('super admin manages admin accounts and reads API response logs', async (t)
   assert.equal(harness.db.state.users.some(user => user.id === admin.id), false);
 });
 
+test('admins can replace a temporary password after verifying the current password', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const adminCookie = extractCookie((await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!')).headers.get('set-cookie'));
+  const attendeeCookie = extractCookie((await login(harness.baseUrl, 'attendee@example.com', 'AttendeePass123!')).headers.get('set-cookie'));
+  const change = (cookie: string, currentPassword: unknown, newPassword: unknown) => fetch(`${harness.baseUrl}/api/auth/change-password`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ currentPassword, newPassword })
+  });
+  const before = structuredClone(harness.db.state.users.find(user => user.id === 'admin_1')!);
+  assert.equal((await change('', 'AdminPass123!', 'MyPrivatePass123!')).status, 403);
+  assert.equal((await change(attendeeCookie, 'AttendeePass123!', 'MyPrivatePass123!')).status, 403);
+  assert.equal((await change(adminCookie, 'WrongPassword123!', 'MyPrivatePass123!')).status, 400);
+  for (const invalidPassword of ['Short1!', 'lowercase1!', 'Uppercase!!', 'Uppercase12', `A1!${'a'.repeat(70)}`]) {
+    assert.equal((await change(adminCookie, 'AdminPass123!', invalidPassword)).status, 400, invalidPassword);
+  }
+  assert.equal((await change(adminCookie, 'AdminPass123!', 'AdminPass123!')).status, 400);
+  assert.deepEqual(harness.db.state.users.find(user => user.id === 'admin_1'), before);
+  const changed = await change(adminCookie, 'AdminPass123!', 'NewP4ss!');
+  assert.equal(changed.status, 200);
+  assert.equal((await changed.json()).success, true);
+  const updated = harness.db.state.users.find(user => user.id === 'admin_1')!;
+  assert.equal(updated.role, 'admin');
+  assert.equal(updated.email, before.email);
+  assert.notEqual(updated.password, 'NewP4ss!');
+  assert.equal(await bcrypt.compare('NewP4ss!', updated.password), true);
+  assert.equal((await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!')).status, 401);
+  assert.equal((await login(harness.baseUrl, 'admin@example.com', 'NewP4ss!')).status, 200);
+});
+
 test('super admin audit log records the underlying cause of a system API error', async (t) => {
   const harness = await createHarness();
   t.after(() => harness.close());
@@ -664,6 +707,43 @@ test('ballot shows and accepts only the voter’s assigned position', async (t) 
   assert.equal(result.votes.length, 1);
   assert.equal(result.votes[0].category, 'employer_cifoz');
   assert.equal((await (await submit({ candidateId: 'cifoz_1' })).json()).duplicate, true);
+});
+
+test('daily election configuration validates hours and manual controls can override the schedule', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const adminCookie = extractCookie((await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!')).headers.get('set-cookie'));
+  const voterCookie = extractCookie((await login(harness.baseUrl, 'attendee@example.com', 'AttendeePass123!')).headers.get('set-cookie'));
+  const details = { title: 'Board election', description: '', scheduleMode: 'daily', timezone: 'Africa/Harare',
+    startsAt: '2035-12-01T07:00:00', endsAt: '2035-12-04T17:00:00' };
+  const save = (body: object) => fetch(`${harness.baseUrl}/api/admin/elections`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify(body)
+  });
+  assert.equal((await save({ ...details, endsAt: '' })).status, 400);
+  assert.equal((await save({ ...details, endsAt: '2035-12-04T06:00:00' })).status, 400);
+  assert.equal((await save({ ...details, timezone: 'Invalid/Timezone' })).status, 400);
+  const saved = await save(details);
+  assert.equal(saved.status, 200);
+  const election = (await saved.json()).election as Election;
+  assert.equal(election.scheduleMode, 'daily');
+  assert.equal(election.status, 'draft');
+  harness.db.state.electionCandidates.push(...(['employee_representative', 'employer_cifoz', 'employer_zbca'] as const).map(category => ({
+    id: `candidate_${category}`, electionId: election.id, category, fullName: category, organization: '', position: '', bio: '', photoUrl: '', displayOrder: 0, createdAt: '', updatedAt: ''
+  })));
+  harness.db.state.electionVoters.push({ id: 'voter_daily', electionId: election.id, userId: 'attendee_1', eligibleCategory: 'employee_representative', addedAt: '' });
+  const setStatus = (status: Election['status']) => fetch(`${harness.baseUrl}/api/admin/elections/${election.id}/status`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ status })
+  });
+  const vote = () => fetch(`${harness.baseUrl}/api/elections/${election.id}/vote`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: voterCookie }, body: JSON.stringify({ candidateId: 'candidate_employee_representative' })
+  });
+  assert.equal((await setStatus('scheduled')).status, 200);
+  assert.equal((await vote()).status, 400, 'Future daily election cannot accept votes');
+  assert.equal((await setStatus('closed')).status, 200);
+  assert.equal((await vote()).status, 400, 'Manual close blocks voting');
+  assert.equal((await setStatus('scheduled')).status, 200, 'Admin can resume the automatic schedule');
+  assert.equal((await setStatus('open')).status, 200);
+  assert.equal((await vote()).status, 200, 'Manual open permits voting outside the configured hours');
 });
 
 test('imported voter signs in with identifier only and sees only their eligible position', async (t) => {

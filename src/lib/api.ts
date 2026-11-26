@@ -161,6 +161,13 @@ export const api = {
     }));
   },
 
+  async changeAdminPassword(currentPassword: string, newPassword: string): Promise<{ success: boolean; message: string }> {
+    return handleResponse(await fetch('/api/auth/change-password', {
+      method: 'POST', headers: JSON_HEADERS, credentials: SAME_ORIGIN_CREDENTIALS,
+      body: JSON.stringify({ currentPassword, newPassword })
+    }));
+  },
+
   async forgotPassword(email: string): Promise<{ success?: boolean; message: string }> {
     const res = await fetch('/api/auth/forgot-password', {
       method: 'POST',
