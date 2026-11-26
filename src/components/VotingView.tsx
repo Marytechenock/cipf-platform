@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { CheckCircle2, ChevronDown, Loader, Lock, ShieldCheck, UsersRound, Vote, X } from 'lucide-react';
 import { api } from '../lib/api';
+import { parseElectionScheduleDate } from '../lib/electionSchedule';
 import type { ElectionBallot, ElectionCandidate, ElectionCandidateCategory, User } from '../types';
 
 const POSITIONS: { category: ElectionCandidateCategory; label: string }[] = [
@@ -13,11 +14,12 @@ interface VotingViewProps {
   user: User;
 }
 
-function formatElectionDateTime(value?: string) {
+function formatElectionDateTime(value?: string, timezone = 'Africa/Harare') {
   if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
+  const date = parseElectionScheduleDate(value, timezone);
+  if (!date) return '';
   return date.toLocaleString('en-GB', {
+    timeZone: timezone,
     day: '2-digit',
     month: 'short',
     year: 'numeric',
@@ -169,6 +171,16 @@ export default function VotingView({ user }: VotingViewProps) {
     void loadBallot();
   }, []);
 
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'hidden') return;
+      void api.getElectionBallot().then(data => setBallot(current => current?.votes.length && !data.votes.length ? current : data)).catch(() => {});
+    };
+    const interval = window.setInterval(refresh, 15000);
+    window.addEventListener('focus', refresh);
+    return () => { window.clearInterval(interval); window.removeEventListener('focus', refresh); };
+  }, []);
+
   const hasVoted = (ballot?.votes.length || 0) > 0;
   const showSuccess = !successDismissed && !isLoading && Boolean(ballot?.election) && (hasVoted || Boolean(message));
 
@@ -181,10 +193,20 @@ export default function VotingView({ user }: VotingViewProps) {
   const canVote = ballot?.election?.status === 'open' && ballot.voter && eligiblePosition && !hasVoted;
   const selectedId = eligiblePosition ? selections[eligiblePosition.category] : undefined;
   const isBallotComplete = Boolean(selectedId);
-  const unavailableVotingMessage = ballot?.election?.status === 'scheduled' && ballot.election.startsAt
-    ? `Voting opens on ${formatElectionDateTime(ballot.election.startsAt)}.`
+  const dailyWindow = ballot?.election?.scheduleMode === 'daily' && ballot.election.startsAt && ballot.election.endsAt
+    ? `${ballot.election.startsAt.slice(11, 16)}–${ballot.election.endsAt.slice(11, 16)} (${ballot.election.timezone || 'Africa/Harare'})`
+    : '';
+  const firstDailyOpen = ballot?.election ? parseElectionScheduleDate(ballot.election.startsAt, ballot.election.timezone) : null;
+  const isBetweenDailyWindows = Boolean(dailyWindow && ballot?.election?.status === 'scheduled'
+    && firstDailyOpen && firstDailyOpen <= new Date());
+  const unavailableVotingMessage = ballot?.election?.status === 'scheduled' && dailyWindow
+    ? `Voting is available daily from ${dailyWindow} until the final day.`
+    : ballot?.election?.status === 'scheduled' && ballot.election.startsAt
+    ? `Voting opens on ${formatElectionDateTime(ballot.election.startsAt, ballot.election.timezone)}.`
     : ballot?.election?.status === 'closed'
-      ? 'Voting has closed.'
+      ? ballot.election.scheduleMode === 'daily' && ballot.election.controlStatus === 'closed'
+        ? 'Voting has been closed by the election administrator.'
+        : 'Voting has closed.'
       : 'Voting is not open right now.';
 
   const submitVote = async () => {
@@ -271,9 +293,10 @@ export default function VotingView({ user }: VotingViewProps) {
               <p className="mt-2 max-w-3xl text-sm font-medium leading-relaxed text-slate-300">
                 Select one candidate for your assigned representative position.
               </p>
+              {dailyWindow && <p className="mt-1 text-xs font-medium text-slate-300">Daily voting hours: {dailyWindow}</p>}
             </div>
             <div className="rounded-xl border border-white/10 bg-white/10 px-4 py-3 text-xs font-semibold">
-              {hasVoted ? 'Ballot submitted' : ballot.election.status === 'open' ? 'Voting open' : ballot.election.status === 'scheduled' ? 'Voting scheduled' : 'Voting not open'}
+              {hasVoted ? 'Ballot submitted' : ballot.election.status === 'open' ? 'Voting open' : isBetweenDailyWindows ? 'Outside voting hours' : ballot.election.status === 'scheduled' ? 'Voting scheduled' : 'Voting not open'}
             </div>
           </div>
         </div>
