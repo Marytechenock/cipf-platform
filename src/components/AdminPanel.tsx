@@ -7,6 +7,7 @@ import { STUDY_MATERIAL_MAX_SIZE_BYTES, STUDY_MATERIAL_MAX_SIZE_MB } from '../co
 import { api, ApiError, isApiErrorStatus } from '../lib/api';
 import { parseVotingEligibility } from '../lib/electionEligibility';
 import { readVoterImportRows } from '../lib/voterImport';
+import { parseElectionScheduleDate } from '../lib/electionSchedule';
 import { AdminUserListQuery, AdventureActivity, AttendanceRecord, AttendanceScanResponse, Election, ElectionCandidate, ElectionCandidateCategory, ElectionVoter, FeedbackSubmission, GalleryImage, QAQuestion, QAQuestionType, QAResponse, Session, Speaker, Sponsor, Testimonial, User } from '../types';
 import {
   Users, Shield, UserX, UserCheck, Trash2, Edit, Save,
@@ -180,7 +181,8 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
     boardSeats: 3,
     startsAt: '',
     endsAt: '',
-    timezone: 'Africa/Harare'
+    timezone: 'Africa/Harare',
+    scheduleMode: 'continuous' as 'continuous' | 'daily'
   });
   const [candidateForm, setCandidateForm] = useState({
     id: '',
@@ -452,7 +454,8 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
             boardSeats: dashboard.election.boardSeats,
             startsAt: dashboard.election.startsAt || '',
             endsAt: dashboard.election.endsAt || '',
-            timezone: dashboard.election.timezone || DEFAULT_ELECTION_TIMEZONE
+            timezone: dashboard.election.timezone || DEFAULT_ELECTION_TIMEZONE,
+            scheduleMode: dashboard.election.scheduleMode || 'continuous'
           });
         }
       } else if (targetTab === 'sponsors') {
@@ -550,7 +553,8 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
           boardSeats: dashboard.election.boardSeats,
           startsAt: dashboard.election.startsAt || '',
           endsAt: dashboard.election.endsAt || '',
-          timezone: dashboard.election.timezone || DEFAULT_ELECTION_TIMEZONE
+          timezone: dashboard.election.timezone || DEFAULT_ELECTION_TIMEZONE,
+          scheduleMode: dashboard.election.scheduleMode || 'continuous'
         });
       }
     } catch (error) {
@@ -576,7 +580,8 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
         boardSeats: dashboard.election.boardSeats,
         startsAt: dashboard.election.startsAt || '',
         endsAt: dashboard.election.endsAt || '',
-        timezone: dashboard.election.timezone || DEFAULT_ELECTION_TIMEZONE
+        timezone: dashboard.election.timezone || DEFAULT_ELECTION_TIMEZONE,
+        scheduleMode: dashboard.election.scheduleMode || 'continuous'
       });
     }
   };
@@ -605,7 +610,15 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
     return () => window.clearInterval(interval);
   }, [subTab]);
 
-  const saveElection = async () => {
+  useEffect(() => {
+    if (subTab !== 'voting') return;
+    const interval = window.setInterval(() => {
+      void api.getAdminElectionDashboard().then(dashboard => setElection(dashboard.election)).catch(() => {});
+    }, 30000);
+    return () => window.clearInterval(interval);
+  }, [subTab]);
+
+  const saveElection = async (showNotice = true) => {
     try {
       const dashboard = await api.saveAdminElection({ ...electionForm, boardSeats: 3 });
       setElection(dashboard.election);
@@ -619,11 +632,12 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
           boardSeats: dashboard.election.boardSeats,
           startsAt: dashboard.election.startsAt || '',
           endsAt: dashboard.election.endsAt || '',
-          timezone: dashboard.election.timezone || DEFAULT_ELECTION_TIMEZONE
+          timezone: dashboard.election.timezone || DEFAULT_ELECTION_TIMEZONE,
+          scheduleMode: dashboard.election.scheduleMode || 'continuous'
         });
       }
       loadedTabsRef.current.voting = true;
-      alert('Election saved.');
+      if (showNotice) alert('Election saved.');
       return dashboard.election;
     } catch (error) {
       reportPanelError(error, 'Failed to save election.');
@@ -645,15 +659,18 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
 
   const closeElectionWithConfirmation = async () => {
     if (!election) return;
-    const confirmed = window.confirm('Close this election now? Voters will no longer be able to submit ballots.');
+    const confirmed = window.confirm(election.scheduleMode === 'daily'
+      ? 'Close voting now? The daily schedule will remain paused until you run the automatic schedule again.'
+      : 'Close this election now? Voters will no longer be able to submit ballots.');
     if (!confirmed) return;
     await updateElectionStatus('closed');
   };
 
   const publishElection = async () => {
-    const targetElection = election || await saveElection();
+    const targetElection = await saveElection(false);
     if (!targetElection) return;
-    const status: Election['status'] = electionForm.startsAt && new Date(electionForm.startsAt) > new Date() ? 'scheduled' : 'open';
+    const start = parseElectionScheduleDate(electionForm.startsAt, electionForm.timezone);
+    const status: Election['status'] = electionForm.scheduleMode === 'daily' || (start && start > new Date()) ? 'scheduled' : 'open';
 
     try {
       const dashboard = await api.updateAdminElectionStatus(targetElection.id, status);
@@ -1840,9 +1857,8 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
     .map(voter => voter.userId);
   const allVisibleVotingMembersSelected = filteredVotingMemberIds.length > 0
     && filteredVotingMemberIds.every(id => selectedVotingMemberIds.includes(id));
-  const isElectionStartInFuture = Boolean(electionForm.startsAt && new Date(electionForm.startsAt) > new Date());
-  const publishElectionLabel = isElectionStartInFuture ? 'Schedule Election' : 'Publish Election';
-
+  const isElectionStartInFuture = Boolean(electionForm.startsAt && (parseElectionScheduleDate(electionForm.startsAt, electionForm.timezone)?.getTime() || 0) > Date.now());
+  const publishElectionLabel = electionForm.scheduleMode === 'daily' ? 'Run Automatic Schedule' : isElectionStartInFuture ? 'Schedule Election' : 'Publish Election';
   return (
       <div className={`space-y-6 rounded-2xl border border-gray-200 bg-[#FAF8F5] shadow-xl sm:p-6 ${subTab === 'attendance' ? 'p-1.5' : 'p-3'}`}>
 
@@ -2391,6 +2407,7 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
                     <div>
                       <p className="text-[10px] font-medium text-slate-500">Status</p>
                       <p className="text-base font-semibold capitalize text-slate-950">{election?.status || 'draft'}</p>
+                      {election?.scheduleMode === 'daily' && <p className="text-[10px] font-medium text-slate-600">{election.controlStatus === 'scheduled' ? 'Automatic' : election.controlStatus === 'open' || election.controlStatus === 'closed' ? 'Manual override' : 'Not published'}</p>}
                     </div>
                   </div>
                   <div className="flex items-center gap-3 rounded-lg border border-sky-200 bg-sky-50/80 px-4 py-3">
@@ -2448,25 +2465,23 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
                           </div>
                         </div>
                         <div className="grid gap-3 sm:grid-cols-2">
-                          <label className="block">
-                            <span className="mb-1 block text-[11px] font-semibold text-slate-500">Voting Opens</span>
-                            <input
-                              type="datetime-local"
-                              value={toDateTimeLocalValue(electionForm.startsAt, electionForm.timezone)}
-                              onChange={(event) => setElectionForm({ ...electionForm, startsAt: fromDateTimeLocalValue(event.target.value) })}
-                              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm font-medium text-slate-900 focus:border-[#B8922A] focus:outline-none"
-                            />
-                          </label>
-                          <label className="block">
-                            <span className="mb-1 block text-[11px] font-semibold text-slate-500">Voting Closes</span>
-                            <input
-                              type="datetime-local"
-                              value={toDateTimeLocalValue(electionForm.endsAt, electionForm.timezone)}
-                              onChange={(event) => setElectionForm({ ...electionForm, endsAt: fromDateTimeLocalValue(event.target.value) })}
-                              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm font-medium text-slate-900 focus:border-[#B8922A] focus:outline-none"
-                            />
-                          </label>
+                          <div className="min-w-0 rounded-xl border border-amber-200 bg-white p-3">
+                            <p className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-600"><Clock className="h-4 w-4" /> Voting Opens</p>
+                            <input type="datetime-local" aria-label="Voting opens" value={toDateTimeLocalValue(electionForm.startsAt, electionForm.timezone)}
+                              onChange={event => setElectionForm({ ...electionForm, startsAt: fromDateTimeLocalValue(event.target.value) })}
+                              className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm text-slate-900 focus:border-[#B8922A] focus:outline-none" />
+                          </div>
+                          <div className="min-w-0 rounded-xl border border-amber-200 bg-white p-3">
+                            <p className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-600"><Clock className="h-4 w-4" /> Voting Closes</p>
+                            <input type="datetime-local" aria-label="Voting closes" value={toDateTimeLocalValue(electionForm.endsAt, electionForm.timezone)}
+                              onChange={event => setElectionForm({ ...electionForm, endsAt: fromDateTimeLocalValue(event.target.value) })}
+                              className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm text-slate-900 focus:border-[#B8922A] focus:outline-none" />
+                          </div>
                         </div>
+                        <label className="mt-3 flex items-center gap-2 text-xs font-medium text-slate-700">
+                          <input type="checkbox" checked={electionForm.scheduleMode === 'daily'} onChange={event => setElectionForm({ ...electionForm, scheduleMode: event.target.checked ? 'daily' : 'continuous' })} className="accent-[#B07A12]" />
+                          Repeat daily between selected dates
+                        </label>
                         <label className="mt-3 block">
                           <span className="mb-1 block text-[11px] font-semibold text-slate-500">Timezone</span>
                           <input
@@ -2488,10 +2503,18 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
                         />
                       </label>
                       <div className="flex gap-2 pt-1">
-                        <button type="button" onClick={async () => { await saveElection(); setIsElectionDetailsEditing(false); }} className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#B07A12] px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#94640f]">
+                        <button type="button" onClick={async () => { if (await saveElection()) setIsElectionDetailsEditing(false); }} className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#B07A12] px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#94640f]">
                           <Save className="h-4 w-4" /> Save Details
                         </button>
-                        <button type="button" onClick={() => setIsElectionDetailsEditing(false)} className="rounded-lg border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-50">
+                        <button type="button" onClick={() => {
+                          setIsElectionDetailsEditing(false);
+                          if (election) setElectionForm({
+                            id: election.id, title: election.title, description: election.description,
+                            boardSeats: election.boardSeats, startsAt: election.startsAt || '', endsAt: election.endsAt || '',
+                            timezone: election.timezone || DEFAULT_ELECTION_TIMEZONE,
+                            scheduleMode: election.scheduleMode || 'continuous'
+                          });
+                        }} className="rounded-lg border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-50">
                           Cancel
                         </button>
                       </div>
@@ -2512,15 +2535,19 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
                           <p className="text-sm font-semibold text-slate-950">Election Schedule</p>
                         </div>
                         <div className="grid gap-3 sm:grid-cols-2">
-                          <div className="rounded-md bg-white p-3 ring-1 ring-amber-100">
+                          <div className="rounded-xl border border-amber-200 bg-white p-3">
                             <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500"><Clock className="h-3.5 w-3.5" /> Voting Opens</p>
                             <p className="mt-1 text-sm font-semibold text-slate-950">{formatElectionSchedule(electionForm.startsAt, electionForm.timezone)}</p>
                           </div>
-                          <div className="rounded-md bg-white p-3 ring-1 ring-amber-100">
+                          <div className="rounded-xl border border-amber-200 bg-white p-3">
                             <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500"><Clock className="h-3.5 w-3.5" /> Voting Closes</p>
                             <p className="mt-1 text-sm font-semibold text-slate-950">{formatElectionSchedule(electionForm.endsAt, electionForm.timezone)}</p>
                           </div>
                         </div>
+                        <label className="mt-3 flex items-center gap-2 text-xs font-medium text-slate-600">
+                          <input type="checkbox" checked={electionForm.scheduleMode === 'daily'} disabled readOnly className="accent-[#B07A12]" />
+                          Repeat daily between selected dates
+                        </label>
                         <div className="mt-3 rounded-md bg-white p-3 ring-1 ring-amber-100">
                           <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500"><Globe className="h-3.5 w-3.5" /> Timezone</p>
                           <p className="mt-1 text-sm font-semibold text-slate-950">{electionForm.timezone || DEFAULT_ELECTION_TIMEZONE}</p>
@@ -2674,8 +2701,8 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
               </div>
 
               <div className="flex flex-wrap items-center justify-end gap-2">
-                    <button type="button" onClick={saveElection} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50">
-                      <Save className="h-4 w-4" /> Save Draft
+                    <button type="button" onClick={() => void saveElection()} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50">
+                      <Save className="h-4 w-4" /> {election ? 'Save Configuration' : 'Save Draft'}
                     </button>
                     <button type="button" onClick={() => window.open('/', '_blank', 'noopener,noreferrer')} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50">
                       <Eye className="h-4 w-4" /> Preview Ballot
@@ -2683,10 +2710,14 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
                     <button type="button" onClick={publishElection} className="inline-flex items-center justify-center gap-2 rounded-md bg-[#B07A12] px-5 py-2 text-xs font-medium text-white shadow-sm hover:bg-[#94640f]">
                       <Send className="h-4 w-4" /> {publishElectionLabel}
                     </button>
+                    {election?.scheduleMode === 'daily' && <button type="button" onClick={() => void updateElectionStatus('open')} className="inline-flex items-center justify-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-medium text-emerald-700 hover:bg-emerald-100">
+                      <Play className="h-4 w-4" /> Open Now (manual)
+                    </button>}
                     <button type="button" onClick={closeElectionWithConfirmation} className="inline-flex items-center justify-center gap-2 rounded-md border border-red-200 bg-red-50 px-5 py-2 text-xs font-medium text-red-600 shadow-sm hover:bg-red-100">
-                      <Square className="h-4 w-4" /> Close Election
+                      <Square className="h-4 w-4" /> {electionForm.scheduleMode === 'daily' ? 'Close Now (manual)' : 'Close Election'}
                     </button>
               </div>
+              {electionForm.scheduleMode === 'daily' && <p className="text-right text-xs text-slate-500">Manual opening or closing stays in effect until you run the automatic schedule again.</p>}
 
               {isCandidateModalOpen && createPortal(
                 <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/55 px-4 py-10 backdrop-blur-sm">
