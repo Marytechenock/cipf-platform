@@ -207,6 +207,12 @@ GROQ_API_KEY
 
 Compose uses `CIPF_PUBLIC_APP_URL` for both the public URL and allowed browser origin. The local `.env` is for development; its localhost URL and `COOKIE_SECURE=false` are not used by the Compose stack. Uploaded files are stored through `UPLOAD_DIR=/app/uploads`, mounted to the `cipf_uploads` Docker volume.
 
+Creating an admin account sends a welcome email with the administrator's name, login email, temporary password, password change instructions, and a link to `CIPF_PUBLIC_APP_URL`. Configure SMTP before creating admins. The SMTP server must support TLS; set `SMTP_SECURE=true` for implicit TLS (usually port 465), or use port 587 with STARTTLS. If the SMTP server rejects the message, creation fails and the new account is removed so it can be retried. SMTP acceptance does not guarantee final inbox delivery; check the recipient's mailbox and mail server logs if needed.
+
+The application now uses server-side revocable sessions: the default absolute lifetime is 8 hours and the idle limit is 15 minutes. Browser polling does not renew idle time. Set `AUTH_TOKEN_TTL` and `AUTH_IDLE_TIMEOUT` in `deploy.env` if a different policy is needed. `CIPF_TRUST_PROXY_HOPS=1` assumes one reverse proxy that **overwrites** client-supplied `X-Forwarded-For`; set it to `0` if the app is reached directly. The reverse proxy must forward `Origin`, `Referer`, and `Sec-Fetch-Site` headers for write-request origin checks. Keep `AUTH_TOKEN_SECRET` stable: changing it invalidates sessions.
+
+On the first start after this security update, previously issued cookies are invalid. Admins and super admins sign in with their email and password. Registered voters sign in using only their identifier from the election register. Sensitive admin actions require a sign-in from the last 10 minutes.
+
 Compose requires super admin bootstrap credentials. Its super admin creates and manages admin accounts, so Compose does not pass the legacy admin bootstrap or force reset settings from the local `.env`.
 
 Set `SUPER_ADMIN_BOOTSTRAP_EMAIL` and a unique password of at least 12 characters and at most 72 bytes to create the first super admin. Sign in and open `/super-admin` to view API metrics, manage administrator accounts, and review API audit logs. Metrics are calculated from stored audit entries and can be filtered by time range, HTTP method, endpoint, and response code. Once a super admin exists, the legacy admin bootstrap no longer recreates deleted admin accounts. The super admin password is never reset automatically on restart.

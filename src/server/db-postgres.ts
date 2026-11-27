@@ -1,5 +1,8 @@
 import { Pool, PoolConfig } from 'pg';
 import {
+    AccessPeriod,
+    LoginAttempt,
+    AuthSession,
     AdminUserListQuery,
     AdminUserSort,
     ApiAuditEntry,
@@ -237,6 +240,7 @@ export class PostgresDatabase {
             await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS qr_token VARCHAR(100) UNIQUE;`);
             await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS qr_issued_at TIMESTAMP;`);
             await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS qr_email_sent_at TIMESTAMP;`);
+            await client.query('ALTER TABLE users DROP COLUMN IF EXISTS mfa_enabled, DROP COLUMN IF EXISTS mfa_secret, DROP COLUMN IF EXISTS mfa_pending_secret, DROP COLUMN IF EXISTS mfa_pending_expires_at;');
 
             await client.query(`
                 CREATE TABLE IF NOT EXISTS api_audit_logs (
@@ -254,6 +258,36 @@ export class PostgresDatabase {
             `);
             await client.query(`CREATE INDEX IF NOT EXISTS idx_api_audit_logs_time ON api_audit_logs(time DESC);`);
             await client.query(`CREATE INDEX IF NOT EXISTS idx_api_audit_logs_status ON api_audit_logs(status_code, time DESC);`);
+
+            await client.query(`
+                CREATE TABLE IF NOT EXISTS platform_access_period (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    starts_at TIMESTAMPTZ NOT NULL,
+                    ends_at TIMESTAMPTZ NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_by VARCHAR(50) REFERENCES users(id) ON DELETE SET NULL,
+                    CONSTRAINT valid_platform_access_period CHECK (ends_at > starts_at)
+                );
+            `);
+            await client.query(`
+                CREATE TABLE IF NOT EXISTS auth_sessions (
+                    id UUID PRIMARY KEY,
+                    user_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    revoked_at TIMESTAMPTZ
+                );
+            `);
+            await client.query('CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id, revoked_at);');
+            await client.query(`
+                CREATE TABLE IF NOT EXISTS auth_login_attempts (
+                    key_hash CHAR(64) PRIMARY KEY,
+                    attempts INTEGER NOT NULL,
+                    first_failed_at TIMESTAMPTZ NOT NULL,
+                    locked_until TIMESTAMPTZ
+                );
+            `);
 
             // Sessions table
             await client.query(`
@@ -639,6 +673,7 @@ export class PostgresDatabase {
                 WHERE id = $2`,
                 [hashedPassword, admin.id]
             );
+            await client.query('UPDATE auth_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL', [admin.id]);
             console.log(forceReset
                 ? `Bootstrap admin password force-reset (${email})`
                 : `Bootstrap admin password initialized (${email})`);
@@ -2496,12 +2531,20 @@ export class PostgresDatabase {
     }
 
     async saveElectionVotes(electionId: string, voterId: string, votes: ElectionVote[]): Promise<ElectionVote[]> {
-        const existing = await this.listElectionVotes(electionId, voterId);
-        if (existing.length > 0) return existing;
-
         const client = await this.pool.connect();
         try {
             await client.query('BEGIN');
+            // Serialize submissions for this voter and election before checking for a ballot.
+            await client.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [electionId, voterId]);
+            const existing = await client.query(`
+                SELECT id, election_id as "electionId", voter_id as "voterId",
+                       candidate_id as "candidateId", category, submitted_at as "submittedAt"
+                FROM election_votes WHERE election_id = $1 AND voter_id = $2
+            `, [electionId, voterId]);
+            if (existing.rows.length > 0) {
+                await client.query('COMMIT');
+                return existing.rows.map((row: any) => this.mapElectionVote(row));
+            }
             for (const vote of votes) {
                 await client.query(`
                     INSERT INTO election_votes (id, election_id, voter_id, candidate_id, category, submitted_at)
@@ -2647,6 +2690,100 @@ export class PostgresDatabase {
         metrics.endpointOptions = options.rows.map(row => row.path);
         metrics.statusCodeOptions = statusOptions.rows.map(row => row.status_code);
         return metrics;
+    }
+
+    async getLoginAttempt(keyHash: string): Promise<LoginAttempt | null> {
+        const result = await this.pool.query('SELECT attempts, first_failed_at, locked_until FROM auth_login_attempts WHERE key_hash = $1', [keyHash]);
+        const row = result.rows[0];
+        return row ? { count: row.attempts, firstFailedAt: row.first_failed_at.toISOString(), lockedUntil: row.locked_until?.toISOString() ?? null } : null;
+    }
+
+    async recordLoginFailure(keyHash: string, maxAttempts: number, windowMs: number, lockMs: number): Promise<LoginAttempt> {
+        const result = await this.pool.query(`
+            INSERT INTO auth_login_attempts (key_hash, attempts, first_failed_at, locked_until)
+            VALUES ($1, 1, NOW(), NULL)
+            ON CONFLICT (key_hash) DO UPDATE SET
+                attempts = CASE WHEN auth_login_attempts.first_failed_at < NOW() - ($3::bigint * INTERVAL '1 millisecond') THEN 1 ELSE auth_login_attempts.attempts + 1 END,
+                first_failed_at = CASE WHEN auth_login_attempts.first_failed_at < NOW() - ($3::bigint * INTERVAL '1 millisecond') THEN NOW() ELSE auth_login_attempts.first_failed_at END,
+                locked_until = CASE WHEN (CASE WHEN auth_login_attempts.first_failed_at < NOW() - ($3::bigint * INTERVAL '1 millisecond') THEN 1 ELSE auth_login_attempts.attempts + 1 END) >= $2
+                    THEN NOW() + ($4::bigint * INTERVAL '1 millisecond') ELSE NULL END
+            RETURNING attempts, first_failed_at, locked_until
+        `, [keyHash, maxAttempts, windowMs, lockMs]);
+        const row = result.rows[0];
+        return { count: row.attempts, firstFailedAt: row.first_failed_at.toISOString(), lockedUntil: row.locked_until?.toISOString() ?? null };
+    }
+
+    async clearLoginAttempt(keyHash: string): Promise<void> {
+        await this.pool.query('DELETE FROM auth_login_attempts WHERE key_hash = $1', [keyHash]);
+    }
+
+    async createAuthSession(session: AuthSession): Promise<void> {
+        await this.pool.query(`
+            INSERT INTO auth_sessions (id, user_id, created_at, last_activity_at, expires_at, revoked_at)
+            VALUES ($1, $2, $3, $4, $5, NULL)
+        `, [session.id, session.userId, session.createdAt, session.lastActivityAt, session.expiresAt]);
+    }
+
+    async getAuthSession(id: string): Promise<AuthSession | null> {
+        const result = await this.pool.query(`
+            SELECT id, user_id AS "userId", created_at AS "createdAt",
+                   last_activity_at AS "lastActivityAt", expires_at AS "expiresAt", revoked_at AS "revokedAt"
+            FROM auth_sessions WHERE id = $1
+        `, [id]);
+        const row = result.rows[0];
+        return row ? {
+            id: row.id, userId: row.userId, createdAt: row.createdAt.toISOString(),
+            lastActivityAt: row.lastActivityAt.toISOString(), expiresAt: row.expiresAt.toISOString(),
+            revokedAt: row.revokedAt?.toISOString() ?? null
+        } : null;
+    }
+
+    async touchAuthSession(id: string, idleMs: number): Promise<boolean> {
+        const result = await this.pool.query(`
+            UPDATE auth_sessions SET last_activity_at = NOW()
+            WHERE id = $1 AND revoked_at IS NULL AND expires_at > NOW()
+              AND last_activity_at > NOW() - ($2::bigint * INTERVAL '1 millisecond')
+        `, [id, idleMs]);
+        return (result.rowCount ?? 0) > 0;
+    }
+
+    async revokeAuthSession(id: string): Promise<void> {
+        await this.pool.query('UPDATE auth_sessions SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL', [id]);
+    }
+
+    async revokeUserAuthSessions(userId: string): Promise<void> {
+        await this.pool.query('UPDATE auth_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL', [userId]);
+    }
+
+    async getAccessPeriod(): Promise<AccessPeriod | null> {
+        const result = await this.pool.query(`
+            SELECT starts_at, ends_at, updated_at, updated_by
+            FROM platform_access_period WHERE id = 1
+        `);
+        const row = result.rows[0];
+        return row ? {
+            startsAt: row.starts_at.toISOString(),
+            endsAt: row.ends_at.toISOString(),
+            updatedAt: row.updated_at.toISOString(),
+            updatedBy: row.updated_by
+        } : null;
+    }
+
+    async saveAccessPeriod(startsAt: string, endsAt: string, updatedBy: string): Promise<AccessPeriod> {
+        const result = await this.pool.query(`
+            INSERT INTO platform_access_period (id, starts_at, ends_at, updated_by)
+            VALUES (1, $1, $2, $3)
+            ON CONFLICT (id) DO UPDATE SET starts_at = EXCLUDED.starts_at,
+                ends_at = EXCLUDED.ends_at, updated_at = NOW(), updated_by = EXCLUDED.updated_by
+            RETURNING starts_at, ends_at, updated_at, updated_by
+        `, [startsAt, endsAt, updatedBy]);
+        const row = result.rows[0];
+        return {
+            startsAt: row.starts_at.toISOString(),
+            endsAt: row.ends_at.toISOString(),
+            updatedAt: row.updated_at.toISOString(),
+            updatedBy: row.updated_by
+        };
     }
 
     async closePool(): Promise<void> {

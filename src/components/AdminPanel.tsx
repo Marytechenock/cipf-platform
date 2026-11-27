@@ -2641,7 +2641,7 @@ export default function AdminPanel({ user, onRefreshCore, onAuthFailure }: Admin
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-[#6F4B0A]">Bulk Upload Only</p>
-                    <p className="text-xs font-medium text-slate-600">No manual voter entry. Voters must be uploaded via Excel/CSV spreadsheet.</p>
+                    <p className="text-xs font-medium text-slate-600">No manual voter entry. Upload the Excel/CSV register so eligible voters can sign in with their identifiers.</p>
                   </div>
                 </div>
 

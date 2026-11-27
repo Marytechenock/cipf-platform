@@ -3,7 +3,7 @@
  */
 
 import React, { useState, useEffect, FormEvent, useCallback, lazy, Suspense } from 'react';
-import { api, isApiErrorStatus } from './lib/api';
+import { api, isAccessPeriodError, isApiErrorStatus } from './lib/api';
 import { User, GalleryImage, Sponsor, Testimonial, AdventureActivity } from './types';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
@@ -73,7 +73,7 @@ export default function App() {
     const [loginMode, setLoginMode] = useState<'member' | 'account'>('account');
     const [loginPassword, setLoginPassword] = useState('');
     const [showLoginPassword, setShowLoginPassword] = useState(false);
-    const [rememberMe, setRememberMe] = useState(true);
+    const [rememberMe, setRememberMe] = useState(false);
     const [loginError, setLoginError] = useState('');
     const [loginNotice, setLoginNotice] = useState('');
     const [loginLoading, setLoginLoading] = useState(false);
@@ -107,6 +107,10 @@ export default function App() {
             })
             .catch((error) => {
                 if (!isActive) return;
+                if (isAccessPeriodError(error)) {
+                    setLoginError(error.message);
+                    navigateTo('/');
+                }
                 if (!isApiErrorStatus(error, [401])) {
                     console.error('Session bootstrap failed:', error);
                 }
@@ -135,11 +139,20 @@ export default function App() {
                 const response = await api.getOptionalSession();
                 if (!active) return;
                 setUser(response.user);
+                if (!response.user) {
+                    setLoginError('Your session has ended. Please sign in again.');
+                    navigateTo('/');
+                    return;
+                }
                 if (user.role === 'member' && response.user?.role === 'attendee') {
                     setActiveTab('home');
                 }
-            } catch {
-                // A temporary connection failure must not end the user's session.
+            } catch (error) {
+                if (active && isAccessPeriodError(error)) {
+                    setUser(null);
+                    setLoginError(error.message);
+                    navigateTo('/');
+                }
             } finally {
                 pending = false;
             }
@@ -155,6 +168,35 @@ export default function App() {
             document.removeEventListener('visibilitychange', onFocus);
         };
     }, [user?.id, user?.role]);
+
+    // Only real user interaction renews the server-side idle timer; background polling does not.
+    useEffect(() => {
+        if (!user) return;
+        let lastSent = 0;
+        let pending = false;
+        const recordActivity = () => {
+            const now = Date.now();
+            if (document.visibilityState === 'hidden' || pending || now - lastSent < 60_000) return;
+            pending = true;
+            void api.recordActivity().then(() => { lastSent = Date.now(); }).catch(error => {
+                if (isApiErrorStatus(error, [401]) || isAccessPeriodError(error)) {
+                    setUser(null);
+                    setLoginError(isAccessPeriodError(error) ? error.message : 'Your session has ended. Please sign in again.');
+                    navigateTo('/');
+                }
+            }).finally(() => { pending = false; });
+        };
+        window.addEventListener('pointerdown', recordActivity);
+        window.addEventListener('keydown', recordActivity);
+        window.addEventListener('touchstart', recordActivity);
+        window.addEventListener('scroll', recordActivity, { passive: true });
+        return () => {
+            window.removeEventListener('pointerdown', recordActivity);
+            window.removeEventListener('keydown', recordActivity);
+            window.removeEventListener('touchstart', recordActivity);
+            window.removeEventListener('scroll', recordActivity);
+        };
+    }, [user?.id]);
 
     // Fetch critical layout details from DB
     const loadAppData = useCallback(async () => {
@@ -558,7 +600,7 @@ export default function App() {
                                 </div>
                                 <div className="my-2 h-px w-full bg-gradient-to-r from-transparent via-[#f97316] to-transparent" />
                                 <h1 className="text-lg font-bold tracking-tight text-[#252525]">{loginMode === 'member' ? 'Member Voting' : 'Sign In'}</h1>
-                                <p className="mt-0.5 text-xs text-slate-700">{loginMode === 'member' ? 'Use your identifier to access your ballot' : 'Access your account to continue'}</p>
+                                <p className="mt-0.5 text-xs text-slate-700">{loginMode === 'member' ? 'Use your registered voter identifier' : 'Access your account to continue'}</p>
                             </div>
 
                             {(loginNotice || loginError) && (
@@ -584,7 +626,7 @@ export default function App() {
                                                 className="min-h-10 w-full rounded-lg border border-slate-300 bg-white/85 py-2 pl-12 pr-4 text-xs text-slate-900 outline-none focus:border-[#f97316] focus:ring-2 focus:ring-[#f97316]/20"
                                             />
                                         </div>
-                                        <p className="mt-1.5 text-[11px] text-slate-700">Enter the identifier on the eligible voter list.</p>
+                                        <p className="mt-1.5 text-[11px] text-slate-700">Enter the identifier listed on the election register.</p>
                                     </div>
                                 ) : (<>
                                 <div className="relative">

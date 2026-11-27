@@ -1,8 +1,10 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Activity, ChartNoAxesCombined, Download, Eye, EyeOff, LogOut, Moon, Pencil, Search, Sun, Trash2, UserCheck, UserPlus, UserX, Users, X } from 'lucide-react';
+import { Activity, CalendarClock, ChartNoAxesCombined, Download, Eye, EyeOff, LogOut, Moon, Pencil, Search, Sun, Trash2, UserCheck, UserPlus, UserX, Users, X } from 'lucide-react';
 import { api } from '../../lib/api';
+import { generateTemporaryAdminPassword } from '../../lib/temporaryAdminPassword';
 import type { ApiAuditEntry, User } from '../../types';
 import SuperAdminMetrics from './SuperAdminMetrics';
+import SuperAdminAccessPeriod from './SuperAdminAccessPeriod';
 import logo from '@/assets/images/logo-1.png';
 
 type AccountForm = { firstName: string; lastName: string; email: string; password: string };
@@ -14,10 +16,11 @@ export default function SuperAdminPortal({ user, onLogout }: { user: User; onLog
     try { return window.localStorage.getItem(SUPER_ADMIN_THEME_KEY) === 'dark' ? 'dark' : 'light'; }
     catch { return 'light'; }
   });
-  const [tab, setTab] = useState<'metrics' | 'accounts' | 'logs'>('metrics');
+  const [tab, setTab] = useState<'metrics' | 'accounts' | 'access' | 'logs'>('metrics');
   const [admins, setAdmins] = useState<User[]>([]);
   const [form, setForm] = useState<AccountForm>(emptyForm);
   const [showPassword, setShowPassword] = useState(false);
+  const [passwordSuggestions, setPasswordSuggestions] = useState<string[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -68,11 +71,13 @@ export default function SuperAdminPortal({ user, onLogout }: { user: User; onLog
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [selectedLog]);
-  const openCreate = () => { setEditingId(null); setForm(emptyForm); setShowPassword(false); setShowForm(true); setError(''); setNotice(''); };
+  const refreshPasswordSuggestions = () => setPasswordSuggestions(Array.from({ length: 3 }, generateTemporaryAdminPassword));
+  const openCreate = () => { setEditingId(null); setForm(emptyForm); setShowPassword(false); refreshPasswordSuggestions(); setShowForm(true); setError(''); setNotice(''); };
   const openEdit = (admin: User) => {
     setEditingId(admin.id);
     setForm({ firstName: admin.firstName, lastName: admin.lastName, email: admin.email || '', password: '' });
     setShowPassword(false);
+    refreshPasswordSuggestions();
     setShowForm(true); setError(''); setNotice('');
   };
   const saveAccount = async (event: FormEvent) => {
@@ -82,8 +87,8 @@ export default function SuperAdminPortal({ user, onLogout }: { user: User; onLog
         ? await api.updateSuperAdminAccount(editingId, form)
         : await api.createSuperAdminAccount(form);
       setAdmins(current => editingId ? current.map(item => item.id === result.admin.id ? result.admin : item) : [...current, result.admin]);
-      setNotice(editingId ? 'Admin account updated.' : 'Admin account created. Share the temporary password through a secure channel.');
-      setForm(emptyForm); setShowPassword(false); setShowForm(false); setEditingId(null);
+      setNotice(editingId ? 'Admin account updated.' : `Admin account created. A welcome email with sign-in details was sent to ${result.admin.email}.`);
+      setForm(emptyForm); setShowPassword(false); setPasswordSuggestions([]); setShowForm(false); setEditingId(null);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save admin account.'); }
     finally { setBusy(false); }
   };
@@ -134,13 +139,14 @@ export default function SuperAdminPortal({ user, onLogout }: { user: User; onLog
       <nav aria-label="Super admin sections" className="flex shrink-0 gap-2 overflow-x-auto bg-[#F2EEE5] px-4 py-2 dark:bg-[#1D2632] md:w-56 md:flex-col md:overflow-x-visible md:overflow-y-auto md:p-4">
         <button type="button" onClick={() => { setTab('metrics'); setSelectedLogId(null); setError(''); }} className={`flex shrink-0 items-center gap-2 whitespace-nowrap rounded-xl px-4 py-3 text-left font-display text-sm font-semibold ${tab === 'metrics' ? 'bg-white text-[#8B6914] shadow-sm dark:bg-[#344252] dark:text-amber-300' : 'text-slate-700 hover:bg-white/70 dark:text-slate-300 dark:hover:bg-white/10'}`}><ChartNoAxesCombined size={17} /> Metrics</button>
         <button type="button" onClick={() => { setTab('accounts'); setSelectedLogId(null); setError(''); }} className={`flex shrink-0 items-center gap-2 whitespace-nowrap rounded-xl px-4 py-3 text-left font-display text-sm font-semibold ${tab === 'accounts' ? 'bg-white text-[#8B6914] shadow-sm dark:bg-[#344252] dark:text-amber-300' : 'text-slate-600 hover:bg-white/70 dark:text-slate-300 dark:hover:bg-white/10'}`}><Users size={17} /> Admin accounts</button>
+        <button type="button" onClick={() => { setTab('access'); setSelectedLogId(null); setError(''); }} className={`flex shrink-0 items-center gap-2 whitespace-nowrap rounded-xl px-4 py-3 text-left font-display text-sm font-semibold ${tab === 'access' ? 'bg-white text-[#8B6914] shadow-sm dark:bg-[#344252] dark:text-amber-300' : 'text-slate-600 hover:bg-white/70 dark:text-slate-300 dark:hover:bg-white/10'}`}><CalendarClock size={17} /> Access period</button>
         <button type="button" onClick={() => { setTab('logs'); setError(''); }} className={`flex shrink-0 items-center gap-2 whitespace-nowrap rounded-xl px-4 py-3 text-left font-display text-sm font-semibold ${tab === 'logs' ? 'bg-white text-[#8B6914] shadow-sm dark:bg-[#344252] dark:text-amber-300' : 'text-slate-600 hover:bg-white/70 dark:text-slate-300 dark:hover:bg-white/10'}`}><Activity size={17} /> API audit logs</button>
       </nav>
       <div className={`min-h-0 min-w-0 flex-1 ${tab === 'metrics' ? 'bg-white dark:bg-[#151B23]' : 'bg-[#F7F6F3] p-4 dark:bg-[#11161D]'}`}>
       <main className={`mx-auto h-full w-full max-w-6xl min-h-0 min-w-0 bg-white dark:bg-[#151B23] ${tab === 'metrics' ? 'overflow-y-auto px-4 py-5 sm:px-6' : `rounded-2xl border border-slate-200 p-5 shadow-sm dark:border-slate-700 ${tab === 'logs' ? 'flex flex-col overflow-hidden sm:p-5' : 'overflow-y-auto sm:p-7'}`}`}>
         {tab !== 'metrics' && error && <p role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm font-semibold text-red-700 dark:bg-red-950/40 dark:text-red-200">{error}</p>}
         {tab !== 'metrics' && notice && <p role="status" className="mb-4 rounded-lg bg-emerald-50 p-3 text-sm font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200">{notice}</p>}
-        {tab === 'metrics' ? <SuperAdminMetrics darkMode={theme === 'dark'} /> : tab === 'accounts' ? <>
+        {tab === 'metrics' ? <SuperAdminMetrics darkMode={theme === 'dark'} /> : tab === 'access' ? <SuperAdminAccessPeriod /> : tab === 'accounts' ? <>
           <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-black">Admin accounts</h1><p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Create and manage administrators of the voting system.</p></div><button type="button" onClick={openCreate} className="inline-flex items-center gap-2 rounded-lg bg-[#1A1A1A] px-4 py-2.5 text-sm font-bold text-white hover:bg-black dark:bg-amber-300 dark:text-slate-950 dark:hover:bg-amber-200"><UserPlus size={17} /> Create admin</button></div>
           {showForm && <form onSubmit={saveAccount} className="mt-6 grid gap-3 rounded-xl border border-amber-200 bg-amber-50/40 p-4 dark:border-amber-900 dark:bg-amber-950/20 sm:grid-cols-2">
             <h2 className="sm:col-span-2 text-base font-bold">{editingId ? 'Edit admin' : 'Create admin'}</h2>
@@ -156,7 +162,16 @@ export default function SuperAdminPortal({ user, onLogout }: { user: User; onLog
                 </button>
               </div>
             </div>
-            <div className="flex gap-2 sm:col-span-2"><button disabled={busy} className="rounded-lg bg-[#1A1A1A] px-4 py-2 text-sm font-bold text-white disabled:opacity-50 dark:bg-amber-300 dark:text-slate-950">{busy ? 'Saving...' : 'Save admin'}</button><button type="button" onClick={() => { setShowForm(false); setForm(emptyForm); setShowPassword(false); }} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold dark:border-slate-600">Cancel</button></div>
+            <div className="sm:col-span-2 rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-[#1D2632]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div><p className="text-xs font-bold">Generated password suggestions</p><p className="mt-0.5 text-xs font-normal text-slate-500 dark:text-slate-400">Select one to use as the temporary password.</p></div>
+                <button type="button" onClick={refreshPasswordSuggestions} className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-white/10">Generate new</button>
+              </div>
+              <div className="mt-3 grid gap-2 md:grid-cols-3">
+                {passwordSuggestions.map((suggestion, index) => <button key={suggestion} type="button" onClick={() => { setForm(current => ({ ...current, password: suggestion })); setShowPassword(true); }} aria-label={`Use generated password suggestion ${index + 1}`} aria-pressed={form.password === suggestion} className={`min-w-0 rounded-lg border px-3 py-2 text-left font-mono text-xs break-all transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-500 ${form.password === suggestion ? 'border-amber-500 bg-amber-50 text-slate-900 dark:bg-amber-950/40 dark:text-amber-100' : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-amber-400 dark:border-slate-600 dark:bg-[#11161D] dark:text-slate-200'}`}>{suggestion}</button>)}
+              </div>
+            </div>
+            <div className="flex gap-2 sm:col-span-2"><button disabled={busy} className="rounded-lg bg-[#1A1A1A] px-4 py-2 text-sm font-bold text-white disabled:opacity-50 dark:bg-amber-300 dark:text-slate-950">{busy ? 'Saving...' : 'Save admin'}</button><button type="button" onClick={() => { setShowForm(false); setForm(emptyForm); setShowPassword(false); setPasswordSuggestions([]); }} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold dark:border-slate-600">Cancel</button></div>
           </form>}
           <div className="mt-6 overflow-x-auto">
             <table className="w-full min-w-[610px] text-left text-sm">

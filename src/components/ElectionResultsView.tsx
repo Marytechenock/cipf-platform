@@ -140,7 +140,7 @@ export default function ElectionResultsView() {
         `${voter.user?.firstName || ''} ${voter.user?.lastName || ''}`.trim(),
         voter.identifier || '',
         voter.user?.organization || '',
-        voter.hasVoted ? 'Submitted' : 'Pending',
+        voter.hasVoted ? 'Submitted' : 'Not Voted',
         voter.votedAt || ''
       ])
     ]);

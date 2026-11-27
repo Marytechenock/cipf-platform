@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { unlink } from 'node:fs/promises';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import bcrypt from 'bcryptjs';
+import type { AdminWelcomeDetails } from './adminWelcomeEmail';
 import { eventDressCode, getDressCodeContext } from '../config/dressCode';
 import type { SessionQuestionRepository } from './session-question-store';
 import type { AudienceQuestion, AudienceQuestionAction, SpeakerAssignment } from '../types/sessionQuestions';
 import type {
+  AccessPeriod,
+  LoginAttempt,
+  AuthSession,
   AdventureActivity,
   DayLink,
   Election,
@@ -66,6 +71,9 @@ function createSessionNote(note: Partial<SessionNote> & Pick<SessionNote, 'userI
 
 function createTestDatabase() {
   const state: {
+    accessPeriod: AccessPeriod | null;
+    authSessions: Map<string, AuthSession>;
+    loginAttempts: Map<string, LoginAttempt>;
     users: StoredUser[];
     elections: Election[];
     electionVoters: ElectionVoter[];
@@ -82,6 +90,9 @@ function createTestDatabase() {
     adventures: AdventureActivity[];
     googleDriveLink: string;
   } = {
+    accessPeriod: { startsAt: '2000-01-01T00:00:00.000Z', endsAt: '2100-01-01T00:00:00.000Z', updatedAt: '2000-01-01T00:00:00.000Z', updatedBy: null },
+    authSessions: new Map(),
+    loginAttempts: new Map(),
     users: [],
     elections: [],
     electionVoters: [],
@@ -123,6 +134,32 @@ function createTestDatabase() {
     state,
     sessionQuestions: undefined as SessionQuestionRepository | undefined,
     async ready() {},
+    async createAuthSession(session: AuthSession) { state.authSessions.set(session.id, session); },
+    async getAuthSession(id: string) { return state.authSessions.get(id) ?? null; },
+    async touchAuthSession(id: string, idleMs: number) {
+      const session = state.authSessions.get(id);
+      if (!session || session.revokedAt || Date.parse(session.expiresAt) <= Date.now() || Date.parse(session.lastActivityAt) + idleMs <= Date.now()) return false;
+      session.lastActivityAt = new Date().toISOString();
+      return true;
+    },
+    async revokeAuthSession(id: string) { const session = state.authSessions.get(id); if (session) session.revokedAt = new Date().toISOString(); },
+    async revokeUserAuthSessions(userId: string) { for (const session of state.authSessions.values()) if (session.userId === userId) session.revokedAt = new Date().toISOString(); },
+    async getLoginAttempt(keyHash: string) { return state.loginAttempts.get(keyHash) ?? null; },
+    async recordLoginFailure(keyHash: string, maxAttempts: number, windowMs: number, lockMs: number) {
+      const now = Date.now();
+      const current = state.loginAttempts.get(keyHash);
+      const count = current && now - Date.parse(current.firstFailedAt) <= windowMs ? current.count + 1 : 1;
+      const record = { count, firstFailedAt: count === 1 ? new Date(now).toISOString() : current!.firstFailedAt,
+        lockedUntil: count >= maxAttempts ? new Date(now + lockMs).toISOString() : null };
+      state.loginAttempts.set(keyHash, record);
+      return record;
+    },
+    async clearLoginAttempt(keyHash: string) { state.loginAttempts.delete(keyHash); },
+    async getAccessPeriod() { return state.accessPeriod; },
+    async saveAccessPeriod(startsAt: string, endsAt: string, updatedBy: string) {
+      state.accessPeriod = { startsAt, endsAt, updatedAt: new Date().toISOString(), updatedBy };
+      return state.accessPeriod;
+    },
     async getElection(id: string) {
       return state.elections.find(election => election.id === id);
     },
@@ -345,7 +382,7 @@ function createTestDatabase() {
   return database;
 }
 
-async function createHarness() {
+async function createHarness(onAdminWelcome?: (details: AdminWelcomeDetails) => Promise<void>) {
   process.env.NODE_ENV = 'test';
   const [{ createApp }, adminPassword, attendeePassword, disabledPassword] = await Promise.all([
     import('../../server.ts'),
@@ -355,6 +392,7 @@ async function createHarness() {
   ]);
 
   const database = createTestDatabase();
+  const sentAdminEmails: AdminWelcomeDetails[] = [];
   database.state.users = [
     createUser({
       id: 'admin_1',
@@ -385,9 +423,14 @@ async function createHarness() {
 
   const app = await createApp({
     db: database as any,
+    publicAppUrl: 'http://localhost:3000',
     authTokenSecret: TEST_AUTH_SECRET,
     authTokenTtl: '1h',
     cookieSecure: true,
+    sendAdminWelcomeEmail: async details => {
+      if (onAdminWelcome) await onAdminWelcome(details);
+      sentAdminEmails.push(details);
+    },
     serveFrontend: false
   });
 
@@ -399,6 +442,7 @@ async function createHarness() {
 
   return {
     db: database,
+    sentAdminEmails,
     baseUrl: `http://127.0.0.1:${port}`,
     async close() {
       await new Promise<void>((resolve, reject) => {
@@ -553,8 +597,15 @@ test('super admin manages admin accounts and reads API response logs', async (t)
   assert.equal(invalid.status, 400);
   const created = await request('/api/super-admin/admins', ownerCookie, 'POST', details);
   assert.equal(created.status, 201);
-  const admin = (await created.json()).admin;
+  const createdBody = await created.json();
+  assert.equal(createdBody.emailSent, true);
+  const admin = createdBody.admin;
   assert.equal(admin.role, 'admin');
+  assert.equal(harness.sentAdminEmails.length, 1);
+  assert.deepEqual(harness.sentAdminEmails[0], {
+    firstName: details.firstName, lastName: details.lastName, email: details.email,
+    temporaryPassword: details.password, loginUrl: 'http://localhost:3000/'
+  });
   assert.equal((await login(harness.baseUrl, details.email, details.password)).status, 200);
   const updated = await request(`/api/super-admin/admins/${admin.id}`, ownerCookie, 'PATCH', { ...details, firstName: 'Updated', password: '' });
   assert.equal(updated.status, 200);
@@ -567,6 +618,139 @@ test('super admin manages admin accounts and reads API response logs', async (t)
   assert.ok(audit.items.some((item: any) => item.statusCode === 400 && item.errorCode === 'INVALID_ADMIN_DETAILS' && item.errorCause.includes('valid email')));
   assert.equal((await request(`/api/super-admin/admins/${admin.id}`, ownerCookie, 'DELETE')).status, 200);
   assert.equal(harness.db.state.users.some(user => user.id === admin.id), false);
+});
+
+test('failed welcome email rolls back a newly created admin account', async (t) => {
+  const harness = await createHarness(async () => { throw new Error('SMTP connection refused'); });
+  t.after(() => harness.close());
+  harness.db.state.users.push(createUser({ id: 'mail_owner', email: 'mail-owner@example.com', role: 'super_admin', password: await bcrypt.hash('OwnerPass123!', 4) }));
+  const ownerCookie = extractCookie((await login(harness.baseUrl, 'mail-owner@example.com', 'OwnerPass123!')).headers.get('set-cookie'));
+  const response = await fetch(`${harness.baseUrl}/api/super-admin/admins`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: ownerCookie },
+    body: JSON.stringify({ firstName: 'New', lastName: 'Admin', email: 'mail-failed@example.com', password: 'TemporaryPass123!' })
+  });
+  assert.equal(response.status, 502);
+  assert.equal((await response.json()).errorCode, 'ADMIN_EMAIL_FAILED');
+  assert.equal(harness.db.state.users.some(user => user.email === 'mail-failed@example.com'), false);
+  assert.equal(harness.sentAdminEmails.length, 0);
+});
+
+test('access period blocks new logins and existing admin and voter sessions at expiry', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  harness.db.state.users.push(createUser({ id: 'access_owner', email: 'access-owner@example.com', role: 'super_admin', password: await bcrypt.hash('OwnerPass123!', 4) }));
+  harness.db.state.users.push(createUser({ id: 'access_voter', email: undefined, role: 'member', password: '', hasSetPassword: false }));
+  harness.db.state.elections.push({ id: 'access_election', title: 'Board election', description: '', status: 'open', boardSeats: 3, createdBy: 'admin_1', createdAt: '', updatedAt: '' });
+  harness.db.state.electionVoters.push({ id: 'access_register', electionId: 'access_election', userId: 'access_voter', identifier: 'ACCESS-001', eligibleCategory: 'employee_representative', addedAt: '' });
+  const ownerCookie = extractCookie((await login(harness.baseUrl, 'access-owner@example.com', 'OwnerPass123!')).headers.get('set-cookie'));
+  const adminCookie = extractCookie((await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!')).headers.get('set-cookie'));
+  const voterLogin = () => fetch(`${harness.baseUrl}/api/auth/member-login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: 'ACCESS-001' }) });
+  const voterCookie = extractCookie((await voterLogin()).headers.get('set-cookie'));
+  const setPeriod = (startsAt: string, endsAt: string, cookie = ownerCookie) => fetch(`${harness.baseUrl}/api/super-admin/access-period`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ startsAt, endsAt })
+  });
+  const now = Date.now();
+  const past = new Date(now - 60_000).toISOString();
+  const future = new Date(now + 60_000).toISOString();
+  assert.equal((await setPeriod(past, future, adminCookie)).status, 403);
+  assert.equal((await setPeriod(future, past)).status, 400);
+  assert.equal((await setPeriod(new Date(now - 120_000).toISOString(), past)).status, 200);
+  assert.equal((await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!')).status, 403);
+  assert.equal((await voterLogin()).status, 403);
+  const deniedAdmin = await fetch(`${harness.baseUrl}/api/admin/users`, { headers: { Cookie: adminCookie } });
+  assert.equal(deniedAdmin.status, 403);
+  assert.equal((await deniedAdmin.json()).errorCode, 'ACCESS_PERIOD_INACTIVE');
+  assert.equal((await fetch(`${harness.baseUrl}/api/elections/ballot`, { headers: { Cookie: voterCookie } })).status, 403);
+  assert.equal((await fetch(`${harness.baseUrl}/api/elections/access_election/vote`, {
+    method: 'POST', headers: { Cookie: voterCookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ candidateId: 'any_candidate' })
+  })).status, 403);
+  assert.equal((await fetch(`${harness.baseUrl}/api/auth/me`, { headers: { Cookie: adminCookie } })).status, 403);
+  assert.equal((await fetch(`${harness.baseUrl}/api/super-admin/access-period`, { headers: { Cookie: ownerCookie } })).status, 200);
+  assert.equal((await login(harness.baseUrl, 'access-owner@example.com', 'OwnerPass123!')).status, 200);
+  assert.equal((await setPeriod(past, future)).status, 200);
+  assert.equal((await fetch(`${harness.baseUrl}/api/auth/me`, { headers: { Cookie: adminCookie } })).status, 200);
+  assert.equal((await fetch(`${harness.baseUrl}/api/elections/ballot`, { headers: { Cookie: voterCookie } })).status, 200);
+  assert.equal((await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!')).status, 200);
+  assert.equal((await setPeriod(future, new Date(now + 120_000).toISOString())).status, 200);
+  assert.equal((await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!')).status, 403);
+  harness.db.state.accessPeriod = null;
+  assert.equal((await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!')).status, 403);
+  const unsetPeriod = await fetch(`${harness.baseUrl}/api/super-admin/access-period`, { headers: { Cookie: ownerCookie } });
+  assert.equal((await unsetPeriod.json()).status, 'not_configured');
+  assert.equal((await setPeriod(past, future)).status, 200);
+});
+
+test('state-changing requests reject untrusted browser origins', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const body = JSON.stringify({ email: 'admin@example.com', password: 'AdminPass123!' });
+  const signIn = (headers: Record<string, string>) => fetch(`${harness.baseUrl}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body
+  });
+  const rejected = await signIn({ Origin: 'https://untrusted.example' });
+  assert.equal(rejected.status, 403);
+  assert.equal((await rejected.json()).errorCode, 'INVALID_REQUEST_ORIGIN');
+  assert.equal((await signIn({ Origin: 'http://localhost:3000', 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  assert.equal((await signIn({ Origin: 'http://localhost:3000' })).status, 200);
+});
+
+test('idle expiry, logout, and password change invalidate server sessions', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const cookie = extractCookie((await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!')).headers.get('set-cookie'));
+  const session = [...harness.db.state.authSessions.values()].find(item => item.userId === 'admin_1')!;
+  session.lastActivityAt = new Date(Date.now() - 16 * 60_000).toISOString();
+  assert.equal((await fetch(`${harness.baseUrl}/api/auth/me`, { headers: { Cookie: cookie } })).status, 401);
+  assert.equal((await fetch(`${harness.baseUrl}/api/auth/activity`, { method: 'POST', headers: { Cookie: cookie } })).status, 401);
+
+  const renewedCookie = extractCookie((await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!')).headers.get('set-cookie'));
+  assert.equal((await fetch(`${harness.baseUrl}/api/auth/activity`, { method: 'POST', headers: { Cookie: renewedCookie } })).status, 200);
+  assert.equal((await fetch(`${harness.baseUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: renewedCookie } })).status, 200);
+  assert.equal((await fetch(`${harness.baseUrl}/api/auth/me`, { headers: { Cookie: renewedCookie } })).status, 401);
+
+  const currentCookie = extractCookie((await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!')).headers.get('set-cookie'));
+  assert.equal((await fetch(`${harness.baseUrl}/api/auth/change-password`, {
+    method: 'POST', headers: { Cookie: currentCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ currentPassword: 'AdminPass123!', newPassword: 'ChangedPass123!' })
+  })).status, 200);
+  assert.equal((await fetch(`${harness.baseUrl}/api/auth/me`, { headers: { Cookie: currentCookie } })).status, 401);
+});
+
+test('admins sign in with a password and sensitive actions require a recent sign-in', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  harness.db.state.users.push(createUser({ id: 'password_owner', email: 'password-owner@example.com', role: 'super_admin', password: await bcrypt.hash('OwnerPass123!', 4) }));
+  const initial = await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!');
+  assert.equal(initial.status, 200);
+  assert.equal((await initial.json()).mfaSetupRequired, undefined);
+  const adminCookie = extractCookie(initial.headers.get('set-cookie'));
+  assert.equal((await fetch(`${harness.baseUrl}/api/admin/users`, { headers: { Cookie: adminCookie } })).status, 200);
+  assert.equal((await login(harness.baseUrl, 'password-owner@example.com', 'OwnerPass123!')).status, 200);
+  assert.equal((await fetch(`${harness.baseUrl}/api/auth/mfa/setup`, { method: 'POST', headers: { Cookie: adminCookie } })).status, 404);
+  const session = [...harness.db.state.authSessions.values()].find(item => item.userId === 'admin_1' && !item.revokedAt)!;
+  session.createdAt = new Date(Date.now() - 11 * 60_000).toISOString();
+  const staleAction = await fetch(`${harness.baseUrl}/api/admin/elections`, { method: 'POST', headers: { Cookie: adminCookie, 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal(staleAction.status, 403);
+  assert.equal((await staleAction.json()).errorCode, 'REAUTH_REQUIRED');
+  assert.equal((await fetch(`${harness.baseUrl}/api/admin/users`, { headers: { Cookie: adminCookie } })).status, 200);
+});
+
+test('registered voters sign in with their identifier alone and the code endpoint is unavailable', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  harness.db.state.users.push(createUser({ id: 'code_voter', email: undefined, role: 'member', password: '', hasSetPassword: false }));
+  harness.db.state.elections.push({ id: 'code_election', title: 'Board election', description: '', status: 'open', boardSeats: 3, createdBy: 'admin_1', createdAt: '', updatedAt: '' });
+  harness.db.state.electionVoters.push({ id: 'code_entry', electionId: 'code_election', userId: 'code_voter', identifier: 'VISIBLE-IDENTIFIER', eligibleCategory: 'employee_representative', addedAt: '' });
+  const adminCookie = extractCookie((await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!')).headers.get('set-cookie'));
+  const signIn = (identifier: string) => fetch(`${harness.baseUrl}/api/auth/member-login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier })
+  });
+  assert.equal((await signIn('UNKNOWN-IDENTIFIER')).status, 401);
+  const signedIn = await signIn('VISIBLE-IDENTIFIER');
+  assert.equal(signedIn.status, 200);
+  const voterCookie = extractCookie(signedIn.headers.get('set-cookie'));
+  assert.equal((await fetch(`${harness.baseUrl}/api/auth/me`, { headers: { Cookie: voterCookie } })).status, 200);
+  assert.equal((await fetch(`${harness.baseUrl}/api/admin/elections/code_election/voter-access-codes`, { method: 'POST', headers: { Cookie: adminCookie } })).status, 404);
 });
 
 test('admins can replace a temporary password after verifying the current password', async (t) => {
@@ -746,7 +930,7 @@ test('daily election configuration validates hours and manual controls can overr
   assert.equal((await vote()).status, 200, 'Manual open permits voting outside the configured hours');
 });
 
-test('imported voter signs in with identifier only and sees only their eligible position', async (t) => {
+test('imported voter signs in with identifier and sees only their eligible position', async (t) => {
   const harness = await createHarness();
   t.after(() => harness.close());
   harness.db.state.users.push(createUser({ id: 'member_identifier', email: undefined, firstName: 'Steve', lastName: 'Chivi', role: 'member', password: '', hasSetPassword: false }));
@@ -760,6 +944,7 @@ test('imported voter signs in with identifier only and sees only their eligible 
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier })
   });
   assert.equal((await signIn('unknown')).status, 401);
+  assert.equal((await signIn('')).status, 400);
   const signedIn = await signIn(' 22222222x22 ');
   assert.equal(signedIn.status, 200);
   assert.equal((await signedIn.json()).user.role, 'member');
@@ -1076,6 +1261,18 @@ test('login rejects invalid credentials and disabled profiles', async (t) => {
 
   const disabledUser = await login(harness.baseUrl, 'disabled@example.com', 'DisabledPass123!');
   assert.equal(disabledUser.status, 403);
+});
+
+test('login throttling stores repeated failures and blocks further attempts', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  for (let attempt = 0; attempt < 7; attempt += 1) {
+    assert.equal((await login(harness.baseUrl, 'admin@example.com', 'wrong-password')).status, 401);
+  }
+  assert.equal(harness.db.state.loginAttempts.size, 1);
+  const locked = await login(harness.baseUrl, 'admin@example.com', 'AdminPass123!');
+  assert.equal(locked.status, 429);
+  assert.ok(Number(locked.headers.get('retry-after')) > 0);
 });
 
 test('optional session returns a guest response for missing, tampered, and disabled-user cookies', async (t) => {

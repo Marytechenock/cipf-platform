@@ -5,8 +5,11 @@ import path from 'path';
 import { getDb } from './src/server/db-postgres';
 import { getEventPhotoAlbums, isGoogleDriveFolderUrl } from './src/lib/eventPhotoAlbums';
 import { isValidAdminPassword } from './src/lib/adminPasswordPolicy';
+import { sendAdminWelcomeEmail, type AdminWelcomeDetails } from './src/server/adminWelcomeEmail';
 import { getEffectiveElectionStatus, isValidElectionTimezone, parseElectionScheduleDate } from './src/lib/electionSchedule';
 import {
+  AccessPeriod,
+  AuthSession,
   AdminUserListQuery,
   ApiAuditEntry,
   ApiMetrics,
@@ -18,6 +21,7 @@ import {
   ChatMessage,
   CheckInAttendee,
   LoginResponse,
+  LoginAttempt,
   MeResponse,
   OptionalSessionResponse,
   PublicAttendeeListQuery,
@@ -58,7 +62,7 @@ const UPLOAD_ROOT = process.env.UPLOAD_DIR
 const ATTENDEE_QR_DIR = path.join(UPLOAD_ROOT, 'attendee-qrcodes');
 
 const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME?.trim() || 'cipf_auth';
-const DEFAULT_AUTH_TOKEN_TTL = '7d';
+const DEFAULT_AUTH_TOKEN_TTL = '8h';
 
 function parseBooleanFlag(value: string | undefined, defaultValue: boolean) {
   if (value === undefined) return defaultValue;
@@ -358,6 +362,7 @@ function createZipArchive(entries: Array<{ name: string; data: Buffer }>) {
 
 interface AuthTokenPayload {
   sub: string;
+  sid: string;
   role: UserRole;
   exp: number;
   method?: 'member_identifier';
@@ -368,6 +373,16 @@ interface AuthTokenPayload {
 export interface AppDatabase {
   sessionQuestions?: SessionQuestionRepository;
   ready(): Promise<void>;
+  createAuthSession(session: AuthSession): Promise<void> | void;
+  getAuthSession(id: string): Promise<AuthSession | null> | AuthSession | null;
+  touchAuthSession(id: string, idleMs: number): Promise<boolean> | boolean;
+  revokeAuthSession(id: string): Promise<void> | void;
+  revokeUserAuthSessions(userId: string): Promise<void> | void;
+  getLoginAttempt(keyHash: string): Promise<LoginAttempt | null> | LoginAttempt | null;
+  recordLoginFailure(keyHash: string, maxAttempts: number, windowMs: number, lockMs: number): Promise<LoginAttempt> | LoginAttempt;
+  clearLoginAttempt(keyHash: string): Promise<void> | void;
+  getAccessPeriod(): Promise<AccessPeriod | null> | AccessPeriod | null;
+  saveAccessPeriod(startsAt: string, endsAt: string, updatedBy: string): Promise<AccessPeriod> | AccessPeriod;
   findUserByEmail(email: string): Promise<StoredUser | undefined> | StoredUser | undefined;
   getUserById(id: string): Promise<StoredUser | undefined> | StoredUser | undefined;
   updateUserCheckin(userId: string, updates: Partial<StoredUser>): Promise<StoredUser> | StoredUser;
@@ -472,11 +487,13 @@ export interface AppDatabase {
 
 interface CreateAppOptions {
   db?: AppDatabase;
+  publicAppUrl?: string;
   authTokenSecret?: string;
   authTokenTtl?: string;
   cookieSecure?: boolean;
   cookieDomain?: string;
   serveFrontend?: boolean;
+  sendAdminWelcomeEmail?: (details: AdminWelcomeDetails) => Promise<void>;
 }
 
 // Ensure upload directories exist
@@ -575,6 +592,9 @@ const uploadAdventure = multer({
 
 export async function createApp(options: CreateAppOptions = {}) {
   const app = express();
+  const trustedProxyHops = Number.parseInt(process.env.TRUST_PROXY_HOPS || '0', 10);
+  if (!Number.isInteger(trustedProxyHops) || trustedProxyHops < 0 || trustedProxyHops > 3) throw new Error('TRUST_PROXY_HOPS must be between 0 and 3.');
+  app.set('trust proxy', trustedProxyHops);
   const db = options.db ?? getDb();
   const authTokenSecret = options.authTokenSecret ?? process.env.AUTH_TOKEN_SECRET;
   if (!authTokenSecret) {
@@ -582,17 +602,20 @@ export async function createApp(options: CreateAppOptions = {}) {
   }
 
   const authTokenTtl = parseDurationToMs(options.authTokenTtl ?? process.env.AUTH_TOKEN_TTL ?? DEFAULT_AUTH_TOKEN_TTL);
+  const authIdleTimeout = parseDurationToMs(process.env.AUTH_IDLE_TIMEOUT ?? '15m');
+  const sendAdminWelcome = options.sendAdminWelcomeEmail ?? sendAdminWelcomeEmail;
+  if (authTokenTtl <= 0 || authIdleTimeout <= 0) throw new Error('Authentication timeouts must be positive.');
   const cookieSecure = options.cookieSecure ?? parseBooleanFlag(process.env.COOKIE_SECURE, process.env.NODE_ENV === 'production');
   const cookieDomain = options.cookieDomain ?? (process.env.COOKIE_DOMAIN?.trim() || undefined);
   const serveFrontend = options.serveFrontend ?? process.env.NODE_ENV !== 'test';
   const maxFailedLoginAttempts = 7;
   const failedLoginLockMs = 20 * 60 * 1000;
-  const failedLoginAttempts = new Map<string, { count: number; firstFailedAt: number; lockedUntil?: number }>();
   const allowedOrigins = new Set([
+    ...parseCsv(options.publicAppUrl ?? process.env.PUBLIC_APP_URL),
     ...parseCsv(process.env.CORS_ALLOWED_ORIGINS),
     ...parseCsv(process.env.CORS_ORIGIN),
     ...(process.env.NODE_ENV === 'production' ? [] : ['http://localhost:3000', 'http://127.0.0.1:3000'])
-  ]);
+  ].map(value => { try { return new URL(value).origin; } catch { return ''; } }).filter(Boolean));
 
   await db.ready();
 
@@ -666,6 +689,28 @@ export async function createApp(options: CreateAppOptions = {}) {
     next();
   });
 
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    if (process.env.NODE_ENV === 'production') res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || !req.originalUrl.startsWith('/api/')) return next();
+
+    const fetchSite = req.get('Sec-Fetch-Site');
+    const origin = req.get('Origin');
+    const referer = req.get('Referer');
+    let sourceOrigin = origin;
+    if (!sourceOrigin && referer) {
+      try { sourceOrigin = new URL(referer).origin; } catch { sourceOrigin = undefined; }
+    }
+    if (fetchSite === 'cross-site' || fetchSite === 'same-site' ||
+        (sourceOrigin && !allowedOrigins.has(sourceOrigin)) ||
+        (!sourceOrigin && fetchSite !== 'same-origin' && process.env.NODE_ENV !== 'test')) {
+      return res.status(403).json({ error: 'Request origin is not allowed.', errorCode: 'INVALID_REQUEST_ORIGIN' });
+    }
+    next();
+  });
+
   const signAuthToken = (payload: AuthTokenPayload) => {
     const encodedPayload = toBase64Url(JSON.stringify(payload));
     const signature = crypto
@@ -679,6 +724,7 @@ export async function createApp(options: CreateAppOptions = {}) {
     .createHmac('sha256', authTokenSecret)
     .update(identifier.trim().toLowerCase())
     .digest('hex');
+
 
   const verifyAuthToken = (token?: string): AuthTokenPayload | null => {
     if (!token) return null;
@@ -701,7 +747,7 @@ export async function createApp(options: CreateAppOptions = {}) {
 
     try {
       const payload = JSON.parse(fromBase64Url(encodedPayload).toString('utf8')) as AuthTokenPayload;
-      if (!payload.sub || !payload.exp || payload.exp < Date.now()) {
+      if (!payload.sub || !payload.sid || !payload.exp || payload.exp <= Date.now()) {
         return null;
       }
       return payload;
@@ -747,33 +793,19 @@ export async function createApp(options: CreateAppOptions = {}) {
     return `${String(email).trim().toLowerCase()}::${getClientIp(req)}`;
   };
 
-  const getFailedLoginLock = (key: string) => {
-    const record = failedLoginAttempts.get(key);
-    if (!record?.lockedUntil) return null;
-    if (record.lockedUntil <= Date.now()) {
-      failedLoginAttempts.delete(key);
-      return null;
-    }
-    return record.lockedUntil;
+  const hashLoginKey = (key: string) => crypto.createHmac('sha256', authTokenSecret).update(key).digest('hex');
+  const asLoginKeys = (keys: string | string[]) => Array.isArray(keys) ? keys : [keys];
+  const getFailedLoginLock = async (keys: string | string[]) => {
+    const records = await Promise.all(asLoginKeys(keys).map(key => db.getLoginAttempt(hashLoginKey(key))));
+    const locked = records.map(record => record?.lockedUntil ? Date.parse(record.lockedUntil) : 0).filter(until => until > Date.now());
+    return locked.length ? Math.max(...locked) : null;
   };
-
-  const recordFailedLogin = (key: string) => {
-    const now = Date.now();
-    const existing = failedLoginAttempts.get(key);
-    const record = existing && now - existing.firstFailedAt <= failedLoginLockMs
-        ? existing
-        : { count: 0, firstFailedAt: now };
-
-    record.count += 1;
-    if (record.count >= maxFailedLoginAttempts) {
-      record.lockedUntil = now + failedLoginLockMs;
-    }
-    failedLoginAttempts.set(key, record);
-    return record;
+  const recordFailedLogin = async (keys: string | string[]) => {
+    const records = await Promise.all(asLoginKeys(keys).map(key => db.recordLoginFailure(hashLoginKey(key), maxFailedLoginAttempts, failedLoginLockMs, failedLoginLockMs)));
+    return records.reduce((highest, record) => record.count > highest.count ? record : highest);
   };
-
-  const clearFailedLogin = (key: string) => {
-    failedLoginAttempts.delete(key);
+  const clearFailedLogin = async (keys: string | string[]) => {
+    await Promise.all(asLoginKeys(keys).map(key => db.clearLoginAttempt(hashLoginKey(key))));
   };
 
   const buildFailedLoginMessage = (baseMessage: string, failedCount: number) => {
@@ -810,6 +842,9 @@ export async function createApp(options: CreateAppOptions = {}) {
     if (!payload) {
       return null;
     }
+    const session = await db.getAuthSession(payload.sid);
+    if (!session || session.userId !== payload.sub || session.revokedAt ||
+        Date.parse(session.expiresAt) <= Date.now() || Date.parse(session.lastActivityAt) + authIdleTimeout <= Date.now()) return null;
     const user = await db.getUserById(payload.sub);
     if (!user || user.status !== 'active') return null;
     if (payload.method === 'member_identifier') {
@@ -861,6 +896,20 @@ export async function createApp(options: CreateAppOptions = {}) {
     });
   };
 
+  const requireRecentSignIn = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const payload = verifyAuthToken(parseCookies(req.headers.cookie)[AUTH_COOKIE_NAME]);
+    if (!payload) return res.status(401).json({ error: 'Sign in again to continue.' });
+    Promise.resolve(db.getAuthSession(payload.sid)).then(session => {
+      if (!session || session.revokedAt || Date.now() - Date.parse(session.createdAt) > 10 * 60_000) {
+        return res.status(403).json({ error: 'For this sensitive action, sign out and sign in again.', errorCode: 'REAUTH_REQUIRED' });
+      }
+      next();
+    }).catch(error => {
+      res.locals.auditCause = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: 'Could not verify recent sign-in.' });
+    });
+  };
+
   const superAdminFailure = (res: express.Response, error: unknown) => {
     if (error && typeof error === 'object' && 'code' in error && error.code === '23505' &&
         'constraint' in error && String(error.constraint).toLowerCase().includes('email')) {
@@ -874,13 +923,69 @@ export async function createApp(options: CreateAppOptions = {}) {
   const validAdminEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
   const adminAccounts = async () => (await db.exportAdminUsers({ role: 'admin', status: 'all' })).filter(user => user.role === 'admin');
 
+  const accessPeriodStatus = (period: AccessPeriod | null) => {
+    if (!period) return 'not_configured';
+    const now = Date.now();
+    if (now < Date.parse(period.startsAt)) return 'upcoming';
+    if (now >= Date.parse(period.endsAt)) return 'expired';
+    return 'active';
+  };
+  const requireActiveAccessPeriod = async (res: express.Response) => {
+    const period = await db.getAccessPeriod();
+    const status = accessPeriodStatus(period);
+    if (status === 'active') return true;
+    res.status(403).json({
+      error: status === 'upcoming' ? 'System access has not started yet.' : status === 'expired' ? 'System access has expired. Contact the system owner.' : 'System access is not configured. Contact the system owner.',
+      errorCode: 'ACCESS_PERIOD_INACTIVE',
+      accessStatus: status
+    });
+    return false;
+  };
+
+  app.get('/api/super-admin/access-period', requireSuperAdmin, async (_req, res) => {
+    try {
+      const period = await db.getAccessPeriod();
+      res.json({ period, status: accessPeriodStatus(period), serverTime: new Date().toISOString() });
+    } catch (error) { superAdminFailure(res, error); }
+  });
+
+  app.put('/api/super-admin/access-period', requireSuperAdmin, requireRecentSignIn, async (req, res) => {
+    try {
+      const startsAt = req.body?.startsAt;
+      const endsAt = req.body?.endsAt;
+      const isoDate = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+      if (typeof startsAt !== 'string' || typeof endsAt !== 'string' || !isoDate.test(startsAt) || !isoDate.test(endsAt) ||
+          !Number.isFinite(Date.parse(startsAt)) || !Number.isFinite(Date.parse(endsAt)) || Date.parse(endsAt) <= Date.parse(startsAt)) {
+        return res.status(400).json({ error: 'Enter a valid start and end date and time. The end must be after the start.', errorCode: 'INVALID_ACCESS_PERIOD' });
+      }
+      const owner = await getAuthUser(req);
+      if (!owner || owner.role !== 'super_admin') return res.status(401).json({ error: 'Please sign in again.' });
+      const period = await db.saveAccessPeriod(startsAt, endsAt, owner.id);
+      res.json({ period, status: accessPeriodStatus(period), serverTime: new Date().toISOString() });
+    } catch (error) { superAdminFailure(res, error); }
+  });
+
+  // Every authenticated API call is checked, so an existing session stops working at expiry.
+  app.use('/api', (req, res, next) => {
+    if (req.path.startsWith('/super-admin/') || req.path === '/auth/login' || req.path === '/auth/member-login' || req.path === '/auth/logout') return next();
+    const token = verifyAuthToken(parseCookies(req.headers.cookie)[AUTH_COOKIE_NAME]);
+    if (!token) return next();
+    Promise.resolve(db.getUserById(token.sub)).then(async user => {
+      if (!user || user.role === 'super_admin') return next();
+      if (await requireActiveAccessPeriod(res)) next();
+    }).catch(error => {
+      res.locals.auditCause = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: 'Could not verify system access.', errorCode: 'ACCESS_LOOKUP_FAILED' });
+    });
+  });
+
   app.get('/api/super-admin/admins', requireSuperAdmin, async (_req, res) => {
     try {
       res.json({ admins: (await adminAccounts()).map(buildUserPayload) });
     } catch (error) { superAdminFailure(res, error); }
   });
 
-  app.post('/api/super-admin/admins', requireSuperAdmin, async (req, res) => {
+  app.post('/api/super-admin/admins', requireSuperAdmin, requireRecentSignIn, async (req, res) => {
     try {
       const firstName = String(req.body.firstName || '').trim();
       const lastName = String(req.body.lastName || '').trim();
@@ -889,6 +994,16 @@ export async function createApp(options: CreateAppOptions = {}) {
       if (!firstName || !lastName || firstName.length > 100 || lastName.length > 100 || email.length > 255 || !validAdminEmail(email)) return res.status(400).json({ error: 'Enter names of at most 100 characters and a valid email address.', errorCode: 'INVALID_ADMIN_DETAILS' });
       if (password.length < 12 || Buffer.byteLength(password, 'utf8') > 72) return res.status(400).json({ error: 'Temporary password must contain at least 12 characters and at most 72 bytes.', errorCode: 'WEAK_PASSWORD' });
       if (await db.findUserByEmail(email)) return res.status(409).json({ error: 'This email already belongs to an account.', errorCode: 'ADMIN_EMAIL_EXISTS' });
+      const publicUrl = (options.publicAppUrl ?? process.env.PUBLIC_APP_URL)?.trim();
+      let loginUrl: string;
+      try {
+        if (!publicUrl) throw new Error('Missing public URL.');
+        const parsed = new URL(publicUrl);
+        if (!['https:', 'http:'].includes(parsed.protocol) || (process.env.NODE_ENV === 'production' && parsed.protocol !== 'https:')) throw new Error('Invalid public URL.');
+        loginUrl = new URL('/', parsed).toString();
+      } catch {
+        return res.status(503).json({ error: 'Configure a valid PUBLIC_APP_URL before creating administrator accounts.', errorCode: 'ADMIN_LOGIN_URL_MISSING' });
+      }
       const admin = await db.saveUser({
         id: `admin_${crypto.randomUUID()}`, email, firstName, lastName, role: 'admin',
         organization: '', position: 'Administrator', status: 'active',
@@ -896,11 +1011,24 @@ export async function createApp(options: CreateAppOptions = {}) {
         checkedIn: false, checkedInAt: '', hasSetPassword: true,
         password: await bcrypt.hash(password, 12), selectedActivity: '', class: 'A'
       });
-      res.status(201).json({ admin: buildUserPayload(admin) });
+      try {
+        await sendAdminWelcome({ firstName, lastName, email, temporaryPassword: password, loginUrl });
+      } catch (mailError) {
+        res.locals.auditCause = mailError instanceof Error ? mailError.message : 'SMTP delivery failed.';
+        console.error('Admin welcome email failed:', mailError);
+        try {
+          if (!await db.deleteUser(admin.id)) throw new Error('New admin account could not be removed.');
+        } catch (rollbackError) {
+          console.error('Admin email failure rollback failed:', rollbackError);
+          return res.status(500).json({ error: 'Admin account exists, but the welcome email was not sent. Review the account before retrying.', errorCode: 'ADMIN_CREATED_EMAIL_FAILED' });
+        }
+        return res.status(502).json({ error: 'Welcome email could not be sent. No admin account was created. Check SMTP settings and try again.', errorCode: 'ADMIN_EMAIL_FAILED' });
+      }
+      res.status(201).json({ admin: buildUserPayload(admin), emailSent: true });
     } catch (error) { superAdminFailure(res, error); }
   });
 
-  app.patch('/api/super-admin/admins/:id', requireSuperAdmin, async (req, res) => {
+  app.patch('/api/super-admin/admins/:id', requireSuperAdmin, requireRecentSignIn, async (req, res) => {
     try {
       const admin = await db.getUserById(req.params.id);
       if (!admin || admin.role !== 'admin') return res.status(404).json({ error: 'Admin account not found.', errorCode: 'ADMIN_NOT_FOUND' });
@@ -914,21 +1042,23 @@ export async function createApp(options: CreateAppOptions = {}) {
       if (emailOwner && emailOwner.id !== admin.id) return res.status(409).json({ error: 'This email already belongs to another account.', errorCode: 'ADMIN_EMAIL_EXISTS' });
       const saved = await db.saveUser({ ...admin, firstName, lastName, email,
         ...(password ? { password: await bcrypt.hash(password, 12), hasSetPassword: true } : {}) });
+      if (password) await db.revokeUserAuthSessions(admin.id);
       res.json({ admin: buildUserPayload(saved) });
     } catch (error) { superAdminFailure(res, error); }
   });
 
-  app.patch('/api/super-admin/admins/:id/status', requireSuperAdmin, async (req, res) => {
+  app.patch('/api/super-admin/admins/:id/status', requireSuperAdmin, requireRecentSignIn, async (req, res) => {
     try {
       const admin = await db.getUserById(req.params.id);
       if (!admin || admin.role !== 'admin') return res.status(404).json({ error: 'Admin account not found.', errorCode: 'ADMIN_NOT_FOUND' });
       if (req.body.status !== 'active' && req.body.status !== 'disabled') return res.status(400).json({ error: 'Choose active or disabled status.', errorCode: 'INVALID_STATUS' });
       const saved = await db.saveUser({ ...admin, status: req.body.status });
+      if (req.body.status === 'disabled') await db.revokeUserAuthSessions(admin.id);
       res.json({ admin: buildUserPayload(saved) });
     } catch (error) { superAdminFailure(res, error); }
   });
 
-  app.delete('/api/super-admin/admins/:id', requireSuperAdmin, async (req, res) => {
+  app.delete('/api/super-admin/admins/:id', requireSuperAdmin, requireRecentSignIn, async (req, res) => {
     try {
       const admin = await db.getUserById(req.params.id);
       if (!admin || admin.role !== 'admin') return res.status(404).json({ error: 'Admin account not found.', errorCode: 'ADMIN_NOT_FOUND' });
@@ -1247,10 +1377,11 @@ export async function createApp(options: CreateAppOptions = {}) {
   // Imported members sign in with the identifier assigned on the active election register.
   app.post('/api/auth/member-login', async (req, res) => {
     try {
+      if (!await requireActiveAccessPeriod(res)) return;
       const identifier = typeof req.body?.identifier === 'string' ? req.body.identifier.trim() : '';
       if (!identifier) return res.status(400).json({ error: 'Enter your voter identifier.' });
-      const failedLoginKey = getFailedLoginKey(req, 'member-voting');
-      const lockedUntil = getFailedLoginLock(failedLoginKey);
+      const failedLoginKey = [getFailedLoginKey(req, 'member-voting'), getFailedLoginKey(req, `member:${identifier}`)];
+      const lockedUntil = await getFailedLoginLock(failedLoginKey);
       if (lockedUntil) {
         res.setHeader('Retry-After', String(Math.ceil((lockedUntil - Date.now()) / 1000)));
         return res.status(429).json({ error: 'Too many sign-in attempts. Please wait 20 minutes before trying again.' });
@@ -1263,14 +1394,18 @@ export async function createApp(options: CreateAppOptions = {}) {
       const voter = matchingVoters.length === 1 ? matchingVoters[0] : undefined;
       const user = voter ? await db.getUserById(voter.userId) : undefined;
       if (!user || (user.role !== 'member' && user.role !== 'attendee') || user.status !== 'active') {
-        res.locals.auditCause = matchingVoters.length > 1 ? 'Identifier is duplicated in the active voter register.' : 'Identifier is not assigned to an active member in the active voter register.';
-        recordFailedLogin(failedLoginKey);
-        return res.status(401).json({ error: 'Identifier not found or not eligible for this election.' });
+        res.locals.auditCause = matchingVoters.length > 1 ? 'Identifier is duplicated in the active voter register.' : 'Voter identifier did not match an active entry.';
+        await recordFailedLogin(failedLoginKey);
+        return res.status(401).json({ error: 'Voter identifier is invalid.' });
       }
 
       res.locals.auditActorId = user.id;
-      clearFailedLogin(failedLoginKey);
-      const authToken = signAuthToken({ sub: user.id, role: 'member', exp: Date.now() + Math.min(authTokenTtl, 12 * 60 * 60 * 1000), method: 'member_identifier', electionId: election.id, identifierDigest: digestVoterIdentifier(voter.identifier!) });
+      await clearFailedLogin(failedLoginKey);
+      const createdAt = new Date().toISOString();
+      const expiresAt = Date.now() + Math.min(authTokenTtl, 12 * 60 * 60 * 1000);
+      const sid = crypto.randomUUID();
+      await db.createAuthSession({ id: sid, userId: user.id, createdAt, lastActivityAt: createdAt, expiresAt: new Date(expiresAt).toISOString(), revokedAt: null });
+      const authToken = signAuthToken({ sub: user.id, sid, role: 'member', exp: expiresAt, method: 'member_identifier', electionId: election.id, identifierDigest: digestVoterIdentifier(voter.identifier!) });
       setAuthCookie(res, authToken, false);
       const response: LoginResponse = { message: `Welcome, ${user.firstName} ${user.lastName}.`, user: buildUserPayload({ ...user, role: 'member' }) };
       res.json(response);
@@ -1290,7 +1425,7 @@ export async function createApp(options: CreateAppOptions = {}) {
       }
 
       const failedLoginKey = getFailedLoginKey(req, email);
-      const lockedUntil = getFailedLoginLock(failedLoginKey);
+      const lockedUntil = await getFailedLoginLock(failedLoginKey);
       if (lockedUntil) {
         const retryAfterSeconds = Math.ceil((lockedUntil - Date.now()) / 1000);
         res.setHeader('Retry-After', String(retryAfterSeconds));
@@ -1300,7 +1435,7 @@ export async function createApp(options: CreateAppOptions = {}) {
       const user = await db.findUserByEmail(String(email));
       if (!user) {
         res.locals.auditCause = 'No account matches the supplied email.';
-        const failedRecord = recordFailedLogin(failedLoginKey);
+        const failedRecord = await recordFailedLogin(failedLoginKey);
         return res.status(401).json({
           error: buildFailedLoginMessage('Invalid email address or unlisted attendee.', failedRecord.count)
         });
@@ -1322,17 +1457,23 @@ export async function createApp(options: CreateAppOptions = {}) {
 
       if (!isValid) {
         res.locals.auditCause = user.hasSetPassword ? 'Password did not match this account.' : 'Account has no password set.';
-        const failedRecord = recordFailedLogin(failedLoginKey);
+        const failedRecord = await recordFailedLogin(failedLoginKey);
         return res.status(401).json({
           error: buildFailedLoginMessage('Incorrect/Invalid password. Please try again.', failedRecord.count)
         });
       }
 
-      clearFailedLogin(failedLoginKey);
+      if (user.role !== 'super_admin' && !await requireActiveAccessPeriod(res)) return;
+
+      await clearFailedLogin(failedLoginKey);
 
       const expiresAt = Date.now() + authTokenTtl;
+      const sid = crypto.randomUUID();
+      const createdAt = new Date().toISOString();
+      await db.createAuthSession({ id: sid, userId: user.id, createdAt, lastActivityAt: createdAt, expiresAt: new Date(expiresAt).toISOString(), revokedAt: null });
       const authToken = signAuthToken({
         sub: user.id,
+        sid,
         role: user.role,
         exp: expiresAt
       });
@@ -1371,6 +1512,7 @@ export async function createApp(options: CreateAppOptions = {}) {
         return res.status(400).json({ error: 'Choose a new password different from your current password.' });
       }
       await db.saveUser({ ...user, password: await bcrypt.hash(newPassword, 12), hasSetPassword: true });
+      await db.revokeUserAuthSessions(user.id);
       res.setHeader('Cache-Control', 'no-store');
       res.json({ success: true, message: 'Password changed. Use your new password the next time you sign in.' });
     } catch (error) {
@@ -1399,8 +1541,24 @@ export async function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.post('/api/auth/logout', (_req, res) => {
-    clearAuthCookie(res);
+  app.post('/api/auth/logout', async (req, res) => {
+    try {
+      const payload = verifyAuthToken(parseCookies(req.headers.cookie)[AUTH_COOKIE_NAME]);
+      if (payload) await db.revokeAuthSession(payload.sid);
+      clearAuthCookie(res);
+      res.json({ success: true });
+    } catch (error) {
+      res.locals.auditCause = error instanceof Error ? error.message : String(error);
+      clearAuthCookie(res);
+      res.status(500).json({ error: 'Could not invalidate the server session.', errorCode: 'LOGOUT_FAILED' });
+    }
+  });
+
+  app.post('/api/auth/activity', requireAuth, async (req, res) => {
+    const payload = verifyAuthToken(parseCookies(req.headers.cookie)[AUTH_COOKIE_NAME]);
+    if (!payload || !await db.touchAuthSession(payload.sid, authIdleTimeout)) {
+      return res.status(401).json({ error: 'Session expired. Please sign in again.', errorCode: 'SESSION_EXPIRED' });
+    }
     res.json({ success: true });
   });
 
@@ -2234,7 +2392,7 @@ Ensure the JSON block is completely valid and correctly placed.`;
     }
   });
 
-  app.post('/api/admin/elections', requireAdmin, async (req, res) => {
+  app.post('/api/admin/elections', requireAdmin, requireRecentSignIn, async (req, res) => {
     try {
       const admin = await getAuthUser(req);
       if (!admin) {
@@ -2297,7 +2455,7 @@ Ensure the JSON block is completely valid and correctly placed.`;
     }
   });
 
-  app.post('/api/admin/elections/:id/status', requireAdmin, async (req, res) => {
+  app.post('/api/admin/elections/:id/status', requireAdmin, requireRecentSignIn, async (req, res) => {
     try {
       const status = normalizeElectionStatus(req.body.status);
       if (status === 'open' || status === 'scheduled') {
@@ -2319,7 +2477,7 @@ Ensure the JSON block is completely valid and correctly placed.`;
     }
   });
 
-  app.post('/api/admin/elections/:id/candidates', requireAdmin, async (req, res) => {
+  app.post('/api/admin/elections/:id/candidates', requireAdmin, requireRecentSignIn, async (req, res) => {
     try {
       const election = await db.getElection(req.params.id);
       if (!election) {
@@ -2358,7 +2516,7 @@ Ensure the JSON block is completely valid and correctly placed.`;
     }
   });
 
-  app.delete('/api/admin/elections/:electionId/candidates/:candidateId', requireAdmin, async (req, res) => {
+  app.delete('/api/admin/elections/:electionId/candidates/:candidateId', requireAdmin, requireRecentSignIn, async (req, res) => {
     try {
       const success = await db.deleteElectionCandidate(req.params.candidateId);
       if (!success) {
@@ -2372,7 +2530,7 @@ Ensure the JSON block is completely valid and correctly placed.`;
     }
   });
 
-  app.post('/api/admin/elections/:id/members', requireAdmin, async (req, res) => {
+  app.post('/api/admin/elections/:id/members', requireAdmin, requireRecentSignIn, async (req, res) => {
     try {
       const election = await db.getElection(req.params.id);
       if (!election) return res.status(404).json({ error: 'Election not found.' });
@@ -2432,7 +2590,7 @@ Ensure the JSON block is completely valid and correctly placed.`;
     }
   });
 
-  app.post('/api/admin/elections/:id/voters', requireAdmin, async (req, res) => {
+  app.post('/api/admin/elections/:id/voters', requireAdmin, requireRecentSignIn, async (req, res) => {
     try {
       const election = await db.getElection(req.params.id);
       if (!election) {
@@ -2471,7 +2629,7 @@ Ensure the JSON block is completely valid and correctly placed.`;
     }
   });
 
-  app.delete('/api/admin/elections/:electionId/voters/:userId', requireAdmin, async (req, res) => {
+  app.delete('/api/admin/elections/:electionId/voters/:userId', requireAdmin, requireRecentSignIn, async (req, res) => {
     try {
       const success = await db.deleteElectionVoter(req.params.electionId, req.params.userId);
       if (!success) {
@@ -2649,10 +2807,7 @@ Ensure the JSON block is completely valid and correctly placed.`;
         qrToken: user.qrToken || generateQrToken(),
         qrIssuedAt: user.qrIssuedAt || new Date().toISOString()
       });
-      const emailPrefix = `${user.email?.trim().toLowerCase()}::`;
-      for (const key of failedLoginAttempts.keys()) {
-        if (key.startsWith(emailPrefix)) failedLoginAttempts.delete(key);
-      }
+      await db.revokeUserAuthSessions(user.id);
       res.json({ success: true, user: buildUserPayload(updated), message: 'Check-in reopened. The attendee can select their name and create a new password using the same email.' });
     } catch (error) {
       res.locals.auditCause = error instanceof Error ? error.message : String(error);
@@ -2673,10 +2828,7 @@ Ensure the JSON block is completely valid and correctly placed.`;
         return res.status(400).json({ error: 'Use 8 or more characters, including an uppercase letter and a number (maximum 72 bytes).' });
       }
       await db.updateUserCheckin(user.id, { password: await bcrypt.hash(password, 10), hasSetPassword: true });
-      const emailPrefix = `${user.email?.trim().toLowerCase()}::`;
-      for (const key of failedLoginAttempts.keys()) {
-        if (key.startsWith(emailPrefix)) failedLoginAttempts.delete(key);
-      }
+      await db.revokeUserAuthSessions(user.id);
       res.json({ success: true, message: 'Password reset. The account can now sign in with the new password.' });
     } catch (error) {
       res.locals.auditCause = error instanceof Error ? error.message : String(error);
@@ -2705,6 +2857,7 @@ Ensure the JSON block is completely valid and correctly placed.`;
 
       userToToggle.status = userToToggle.status === 'active' ? 'disabled' : 'active';
       const saved = await db.saveUser(userToToggle);
+      if (saved.status === 'disabled') await db.revokeUserAuthSessions(saved.id);
 
       res.json({ success: true, user: buildUserPayload(saved) });
     } catch (error) {

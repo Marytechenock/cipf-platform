@@ -75,6 +75,7 @@ async function main() {
   };
 
   await db.saveUser(updatedUser);
+  await db.revokeUserAuthSessions(user.id);
 
   const persistedUser = await db.findUserByEmail(email);
   if (!persistedUser || persistedUser.password !== hashedPassword || !persistedUser.hasSetPassword) {

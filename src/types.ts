@@ -6,6 +6,28 @@ export type UserRole = 'super_admin' | 'admin' | 'attendee' | 'member';
 export type UserClass = 'A' | 'B';
 export type AdminUserSort = 'created_desc' | 'name_asc';
 
+export interface AccessPeriod {
+  startsAt: string;
+  endsAt: string;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+export interface AuthSession {
+  id: string;
+  userId: string;
+  createdAt: string;
+  lastActivityAt: string;
+  expiresAt: string;
+  revokedAt: string | null;
+}
+
+export interface LoginAttempt {
+  count: number;
+  firstFailedAt: string;
+  lockedUntil: string | null;
+}
+
 export interface User {
   id: string;
   email?: string; // Made optional - can be added during check-in

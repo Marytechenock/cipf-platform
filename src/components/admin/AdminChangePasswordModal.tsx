@@ -3,7 +3,7 @@ import { Check, Circle, Eye, EyeOff } from 'lucide-react';
 import { api } from '../../lib/api';
 import { getAdminPasswordChecks, isValidAdminPassword } from '../../lib/adminPasswordPolicy';
 
-export default function AdminChangePasswordModal({ onClose }: { onClose: () => void }) {
+export default function AdminChangePasswordModal({ onClose, onPasswordChanged }: { onClose: () => void; onPasswordChanged: () => void }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -69,7 +69,7 @@ export default function AdminChangePasswordModal({ onClose }: { onClose: () => v
     style={{ width: 'calc(100% - 2rem)' }}
     className="m-auto max-h-[90dvh] max-w-md overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 text-slate-900 shadow-2xl backdrop:bg-black/60">
     <h2 id="admin-change-password-title" className="text-xl font-bold">Change password</h2>
-    {done ? <p role="status" className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">Password changed. Use your new password the next time you sign in.</p> : <>
+    {done ? <p role="status" className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">Password changed. All sessions were signed out. Use your new password to sign in again.</p> : <>
       <p className="mt-2 text-sm text-slate-600">Replace your temporary password with one only you know.</p>
       <form id="admin-change-password-form" onSubmit={submit} className="mt-5 space-y-4">
         {field('admin-current-password', 'Current password', currentPassword, setCurrentPassword, 'current-password')}
@@ -96,7 +96,7 @@ export default function AdminChangePasswordModal({ onClose }: { onClose: () => v
       </form>
     </>}
     <div className="mt-6 flex justify-end gap-2">
-      <button type="button" disabled={saving} onClick={onClose} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">{done ? 'Close' : 'Cancel'}</button>
+      <button type="button" disabled={saving} onClick={done ? onPasswordChanged : onClose} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">{done ? 'Sign in again' : 'Cancel'}</button>
       {!done && <button type="submit" form="admin-change-password-form" disabled={saving} className="rounded-lg bg-[#1A1A1A] px-4 py-2 text-sm font-bold text-white hover:bg-[#333] disabled:opacity-50">{saving ? 'Saving…' : 'Change password'}</button>}
     </div>
   </dialog>;

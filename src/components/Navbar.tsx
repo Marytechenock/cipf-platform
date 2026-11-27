@@ -235,7 +235,7 @@ export default function Navbar({ user, onLogout, activeTab, onSelectTab, onSelec
               </div>
             </div>
         )}
-        {showChangePassword && user?.role === 'admin' && <AdminChangePasswordModal onClose={() => setShowChangePassword(false)} />}
+        {showChangePassword && user?.role === 'admin' && <AdminChangePasswordModal onClose={() => setShowChangePassword(false)} onPasswordChanged={onLogout} />}
       </header>
   );
 }

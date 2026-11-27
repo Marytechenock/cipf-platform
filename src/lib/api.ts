@@ -3,6 +3,7 @@
  */
 
 import {
+  AccessPeriod,
   AdminUserListQuery,
   ApiAuditEntry,
   ApiMetrics,
@@ -52,6 +53,12 @@ export class ApiError extends Error {
 
 export function isApiErrorStatus(error: unknown, statuses: number[]) {
   return error instanceof ApiError && statuses.includes(error.status);
+}
+
+export function isAccessPeriodError(error: unknown) {
+  return error instanceof ApiError && error.status === 403 &&
+    typeof error.data === 'object' && error.data !== null && 'errorCode' in error.data &&
+    error.data.errorCode === 'ACCESS_PERIOD_INACTIVE';
 }
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
@@ -120,6 +127,15 @@ function normalizePublicAttendeeListResponse(data: unknown): PublicAttendeeListR
 }
 
 export const api = {
+  async getAccessPeriod(): Promise<{ period: AccessPeriod | null; status: 'not_configured' | 'upcoming' | 'active' | 'expired'; serverTime: string }> {
+    return handleResponse(await fetch('/api/super-admin/access-period', { credentials: SAME_ORIGIN_CREDENTIALS }));
+  },
+  async saveAccessPeriod(startsAt: string, endsAt: string): Promise<{ period: AccessPeriod; status: 'upcoming' | 'active' | 'expired'; serverTime: string }> {
+    return handleResponse(await fetch('/api/super-admin/access-period', {
+      method: 'PUT', headers: JSON_HEADERS, credentials: SAME_ORIGIN_CREDENTIALS,
+      body: JSON.stringify({ startsAt, endsAt })
+    }));
+  },
   async getSuperAdminMetrics(params: { range: ApiMetricsRange; method: string; path: string; code: string }): Promise<ApiMetrics> {
     const query = new URLSearchParams({ range: params.range, method: params.method, path: params.path, code: params.code });
     return handleResponse(await fetch(`/api/super-admin/metrics?${query}`, { credentials: SAME_ORIGIN_CREDENTIALS }));
@@ -212,6 +228,10 @@ export const api = {
       cache: 'no-store'
     });
     return handleResponse(res);
+  },
+
+  async recordActivity(): Promise<{ success: boolean }> {
+    return handleResponse(await fetch('/api/auth/activity', { method: 'POST', credentials: SAME_ORIGIN_CREDENTIALS }));
   },
 
   // Sessions Program

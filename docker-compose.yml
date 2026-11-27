@@ -14,17 +14,19 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      TRUST_PROXY_HOPS: ${CIPF_TRUST_PROXY_HOPS:-1}
       UPLOAD_DIR: /app/uploads
 
-      PUBLIC_APP_URL: ${CIPF_PUBLIC_APP_URL:?Set CIPF_PUBLIC_APP_URL to the new HTTPS hostname}
-      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:?Set a unique AUTH_TOKEN_SECRET for CIPF}
-      AUTH_TOKEN_TTL: ${AUTH_TOKEN_TTL:-7d}
+      PUBLIC_APP_URL: ${CIPF_PUBLIC_APP_URL:-}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:-}
+      AUTH_TOKEN_TTL: ${AUTH_TOKEN_TTL:-8h}
+      AUTH_IDLE_TIMEOUT: ${AUTH_IDLE_TIMEOUT:-15m}
       AUTH_COOKIE_NAME: cipf_auth
       COOKIE_SECURE: ${CIPF_COOKIE_SECURE:-true}
-      CORS_ALLOWED_ORIGINS: ${CIPF_PUBLIC_APP_URL:?Set CIPF_PUBLIC_APP_URL to the new HTTPS hostname}
+      CORS_ALLOWED_ORIGINS: ${CIPF_PUBLIC_APP_URL:-}
 
-      SUPER_ADMIN_BOOTSTRAP_EMAIL: ${SUPER_ADMIN_BOOTSTRAP_EMAIL:?Set the CIPF super admin email}
-      SUPER_ADMIN_BOOTSTRAP_PASSWORD: ${SUPER_ADMIN_BOOTSTRAP_PASSWORD:?Set the CIPF super admin password}
+      SUPER_ADMIN_BOOTSTRAP_EMAIL: ${SUPER_ADMIN_BOOTSTRAP_EMAIL:-}
+      SUPER_ADMIN_BOOTSTRAP_PASSWORD: ${SUPER_ADMIN_BOOTSTRAP_PASSWORD:-}
       SUPER_ADMIN_BOOTSTRAP_FIRST_NAME: ${SUPER_ADMIN_BOOTSTRAP_FIRST_NAME:-System}
       SUPER_ADMIN_BOOTSTRAP_LAST_NAME: ${SUPER_ADMIN_BOOTSTRAP_LAST_NAME:-Owner}
 
@@ -32,7 +34,7 @@ services:
       DB_PORT: 5432
       DB_NAME: ${CIPF_DB_NAME:-cip_election}
       DB_USER: ${CIPF_DB_USER:-cipf_user}
-      DB_PASSWORD: ${DB_PASSWORD:?Set a unique DB_PASSWORD for CIPF}
+      DB_PASSWORD: ${DB_PASSWORD:-}
       DB_SSL: "false"
       DB_AUTO_CREATE: "false"
 
@@ -53,7 +55,7 @@ services:
     environment:
       POSTGRES_DB: ${CIPF_DB_NAME:-cip_election}
       POSTGRES_USER: ${CIPF_DB_USER:-cipf_user}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set a unique DB_PASSWORD for CIPF}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-}
     volumes:
       - cipf_postgres_data:/var/lib/postgresql/data
     healthcheck:
